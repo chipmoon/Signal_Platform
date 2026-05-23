@@ -1,4 +1,4 @@
-"""
+﻿"""
 Vietnam Stock Provider Plugin v2.0
 ===================================
 Enhanced with:
@@ -7,8 +7,8 @@ Enhanced with:
 - Graceful degradation when vnstock API fails
 
 Architecture:
-    1. Stock list: Cache → vnstock API
-    2. Price data: Cache → vnstock → TvDatafeed fallback
+    1. Stock list: Cache â†’ vnstock API
+    2. Price data: Cache â†’ vnstock â†’ TvDatafeed fallback
 """
 
 from __future__ import annotations
@@ -70,9 +70,6 @@ def _temporary_disable_broken_loopback_proxy():
 
 # Import vnstock with graceful fallback
 try:
-
-# Import vnstock with graceful fallback
-try:
     from vnstock import Listing, Vnstock
     VNSTOCK_AVAILABLE = True
 except ImportError:
@@ -84,7 +81,7 @@ try:
     from tvDatafeed import TvDatafeed, Interval
     TVDATAFEED_AVAILABLE = True
 except ImportError:
-    logger.warning("tvDatafeed not installed — TvDatafeed features disabled.")
+    logger.warning("tvDatafeed not installed â€” TvDatafeed features disabled.")
     TVDATAFEED_AVAILABLE = False
 
 
@@ -107,8 +104,8 @@ class VietnamStockProviderV2(AssetProvider):
             api_key: VNStock API key (optional, can use environment variable)
         """
         if not VNSTOCK_AVAILABLE:
-            # Degrade gracefully — don't raise, just log and operate with empty list
-            logger.warning("vnstock not available — Vietnam provider running in degraded mode (no VN stocks).")
+            # Degrade gracefully â€” don't raise, just log and operate with empty list
+            logger.warning("vnstock not available â€” Vietnam provider running in degraded mode (no VN stocks).")
 
         # Set API key
         if api_key:
@@ -366,7 +363,7 @@ class VietnamStockProviderV2(AssetProvider):
                             'Volume': 'sum'
                         }).dropna().reset_index()
 
-                    # ── Vietnam Signal Enrichment (Only for Daily) ────────────────
+                    # â”€â”€ Vietnam Signal Enrichment (Only for Daily) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     if interval_l == "1d" and base_symbol != "VNINDEX":
                         logger.info(f"Enriching {base_symbol} with Alpha Signals (VNI)...")
                         try:
@@ -627,12 +624,12 @@ class VietnamStockProviderV2(AssetProvider):
                     latest = ratios.iloc[0] if len(ratios) > 0 else None
                     if latest is not None:
                         mapping = {
-                            'pe': ['Chỉ tiêu định giá_P/E', 'P/E'],
-                            'pb': ['Chỉ tiêu định giá_P/B', 'P/B'],
-                            'eps': ['Chỉ tiêu định giá_EPS (VND)', 'EPS (VND)'],
-                            'roe': ['Chỉ tiêu khả năng sinh lợi_ROE (%)', 'ROE (%)'],
-                            'dividend_yield': ['Chỉ tiêu khả năng sinh lợi_Tỷ suất cổ tức (%)', 'Dividend Yield'],
-                            'bvps': ['Chỉ tiêu định giá_BVPS (VND)', 'BVPS (VND)']
+                            'pe': ['Chá»‰ tiÃªu Ä‘á»‹nh giÃ¡_P/E', 'P/E'],
+                            'pb': ['Chá»‰ tiÃªu Ä‘á»‹nh giÃ¡_P/B', 'P/B'],
+                            'eps': ['Chá»‰ tiÃªu Ä‘á»‹nh giÃ¡_EPS (VND)', 'EPS (VND)'],
+                            'roe': ['Chá»‰ tiÃªu kháº£ nÄƒng sinh lá»£i_ROE (%)', 'ROE (%)'],
+                            'dividend_yield': ['Chá»‰ tiÃªu kháº£ nÄƒng sinh lá»£i_Tá»· suáº¥t cá»• tá»©c (%)', 'Dividend Yield'],
+                            'bvps': ['Chá»‰ tiÃªu Ä‘á»‹nh giÃ¡_BVPS (VND)', 'BVPS (VND)']
                         }
                         
                         for key, possible_cols in mapping.items():
@@ -789,4 +786,4 @@ try:
     registry.register(_vn_provider)
     logger.success(f"Registered {_vn_provider.market_name} provider v2.0 (with cache + TvDatafeed)")
 except Exception as e:
-    logger.error(f"Failed to register Vietnam provider v2: {e} — VN market disabled, other markets still available.")
+    logger.error(f"Failed to register Vietnam provider v2: {e} â€” VN market disabled, other markets still available.")
