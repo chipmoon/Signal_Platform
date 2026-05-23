@@ -21,7 +21,8 @@ loguru>=0.7
 python-dotenv>=1.0
 vnstock>=0.2.8
 
-# NLP — FinBERT (lazy-loaded, has keyword fallback if unavailable)
-# Note: torch is NOT listed here → transformers will use ONNX/CPU backend
-transformers>=4.30
-sentencepiece>=0.1.99
+# NLP — commented out to reduce build time on HF Spaces
+# The app has a built-in keyword fallback when transformers is unavailable.
+# Uncomment below only if FinBERT sentiment is required:
+# transformers>=4.30
+# sentencepiece>=0.1.99

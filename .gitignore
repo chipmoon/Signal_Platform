@@ -45,3 +45,10 @@ Thumbs.db
 # Logs
 *.log
 loguru.log
+
+# Local shim/fallback files — these shadow real packages on HF Spaces
+loguru.py
+yfinance.py
+
+# Brain/AI session data
+.brain/
