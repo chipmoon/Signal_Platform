@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+venv_broken/
+.venv/
+env/
+
+# Environment & Secrets (NEVER commit these!)
+.env
+.streamlit/secrets.toml
+
+# Cache & data
+.cache/
+.matplotlib/
+.vnstock/
+.pytest_cache/
+AppData/
+
+# Output files
+output/
+*.xlsx
+*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+~$*
+
+# Logs
+*.log
+loguru.log
