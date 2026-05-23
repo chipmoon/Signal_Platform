@@ -1,14 +1,4 @@
----
-title: Trading Intelligence Platform
-emoji: 📈
-colorFrom: blue
-colorTo: indigo
-sdk: streamlit
-sdk_version: 1.35.0
-app_file: streamlit_app.py
-pinned: false
-license: mit
----
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io)
 
 # Trading Intelligence Platform 📈
 

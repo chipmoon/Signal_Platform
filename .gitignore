@@ -52,3 +52,6 @@ yfinance.py
 
 # Brain/AI session data
 .brain/
+
+# HuggingFace Spaces only — not needed on Streamlit Cloud
+# packages.txt is kept for reference but not used by Streamlit Cloud
