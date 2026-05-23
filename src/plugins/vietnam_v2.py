@@ -70,6 +70,9 @@ def _temporary_disable_broken_loopback_proxy():
 
 # Import vnstock with graceful fallback
 try:
+
+# Import vnstock with graceful fallback
+try:
     from vnstock import Listing, Vnstock
     VNSTOCK_AVAILABLE = True
 except ImportError:
@@ -81,8 +84,8 @@ try:
     from tvDatafeed import TvDatafeed, Interval
     TVDATAFEED_AVAILABLE = True
 except ImportError:
-    logger.warning("tvDatafeed not installed. Run: pip install tvDatafeed")
-TVDATAFEED_AVAILABLE = False
+    logger.warning("tvDatafeed not installed — TvDatafeed features disabled.")
+    TVDATAFEED_AVAILABLE = False
 
 
 def _safe_err(e: Exception) -> str:
@@ -104,7 +107,8 @@ class VietnamStockProviderV2(AssetProvider):
             api_key: VNStock API key (optional, can use environment variable)
         """
         if not VNSTOCK_AVAILABLE:
-            raise ImportError("vnstock library not available. Install with: pip install vnstock")
+            # Degrade gracefully — don't raise, just log and operate with empty list
+            logger.warning("vnstock not available — Vietnam provider running in degraded mode (no VN stocks).")
 
         # Set API key
         if api_key:
@@ -150,6 +154,11 @@ class VietnamStockProviderV2(AssetProvider):
     def _ensure_initialized(self) -> None:
         """Lazy load stock list with cache."""
         if self._initialized:
+            return
+        
+        # If vnstock is not available, we cannot initialize the stock list
+        if not VNSTOCK_AVAILABLE:
+            self._initialized = True
             return
 
         # Try cache first
@@ -335,57 +344,58 @@ class VietnamStockProviderV2(AssetProvider):
             return cached
 
         # Try primary fetch (vnstock)
-        try:
-            # Handle 4h by fetching 1h and resampling
-            fetch_interval = vn_interval
-            resample_4h = False
-            if vn_interval == '4h' or vn_interval == '4H':
-                fetch_interval = '1H'
-                resample_4h = True
+        if VNSTOCK_AVAILABLE:
+            try:
+                # Handle 4h by fetching 1h and resampling
+                fetch_interval = vn_interval
+                resample_4h = False
+                if vn_interval == '4h' or vn_interval == '4H':
+                    fetch_interval = '1H'
+                    resample_4h = True
 
-            df = self._fetch_from_vnstock(base_symbol, start, end, fetch_interval)
-            
-            if df is not None and not df.empty:
-                if resample_4h:
-                    logger.info(f"Resampling 1H to 4H for {base_symbol}")
-                    df = df.set_index('Date').resample('4H').agg({
-                        'Open': 'first',
-                        'High': 'max',
-                        'Low': 'min',
-                        'Close': 'last',
-                        'Volume': 'sum'
-                    }).dropna().reset_index()
+                df = self._fetch_from_vnstock(base_symbol, start, end, fetch_interval)
+                
+                if df is not None and not df.empty:
+                    if resample_4h:
+                        logger.info(f"Resampling 1H to 4H for {base_symbol}")
+                        df = df.set_index('Date').resample('4H').agg({
+                            'Open': 'first',
+                            'High': 'max',
+                            'Low': 'min',
+                            'Close': 'last',
+                            'Volume': 'sum'
+                        }).dropna().reset_index()
 
-                # ── Vietnam Signal Enrichment (Only for Daily) ────────────────
-                if interval_l == "1d" and base_symbol != "VNINDEX":
-                    logger.info(f"Enriching {base_symbol} with Alpha Signals (VNI)...")
-                    try:
-                        # 1. VNI Index (Market Beta)
-                        vni_cache_key = f"{start}:{end}"
-                        vni = self._vni_cache.get(vni_cache_key)
-                        if vni is None and not self._vni_fetch_failed:
-                            # Prevent concurrent VNINDEX fetch stampede during threaded scans
-                            with self._vni_lock:
-                                vni = self._vni_cache.get(vni_cache_key)
-                                if vni is None and not self._vni_fetch_failed:
-                                    with _temporary_disable_broken_loopback_proxy():
-                                        vni_ticker = Vnstock().stock(symbol='VNINDEX', source='VCI')
-                                        vni = vni_ticker.quote.history(start=start, end=end, interval='1D')
-                                    self._vni_cache[vni_cache_key] = vni
-                        
-                        if vni is not None and not vni.empty:
-                            vni['Date'] = pd.to_datetime(vni['time']).dt.tz_localize(None)
-                            vni = vni.rename(columns={'close': 'VNI'})[['Date', 'VNI']]
-                            df = df.merge(vni, on="Date", how="left").ffill()
-                    except Exception as ex:
-                        self._vni_fetch_failed = True
-                        logger.warning(f"VN signal enrichment failed: {_safe_err(ex)}")
+                    # ── Vietnam Signal Enrichment (Only for Daily) ────────────────
+                    if interval_l == "1d" and base_symbol != "VNINDEX":
+                        logger.info(f"Enriching {base_symbol} with Alpha Signals (VNI)...")
+                        try:
+                            # 1. VNI Index (Market Beta)
+                            vni_cache_key = f"{start}:{end}"
+                            vni = self._vni_cache.get(vni_cache_key)
+                            if vni is None and not self._vni_fetch_failed:
+                                # Prevent concurrent VNINDEX fetch stampede during threaded scans
+                                with self._vni_lock:
+                                    vni = self._vni_cache.get(vni_cache_key)
+                                    if vni is None and not self._vni_fetch_failed:
+                                        with _temporary_disable_broken_loopback_proxy():
+                                            vni_ticker = Vnstock().stock(symbol='VNINDEX', source='VCI')
+                                            vni = vni_ticker.quote.history(start=start, end=end, interval='1D')
+                                        self._vni_cache[vni_cache_key] = vni
+                            
+                            if vni is not None and not vni.empty:
+                                vni['Date'] = pd.to_datetime(vni['time']).dt.tz_localize(None)
+                                vni = vni.rename(columns={'close': 'VNI'})[['Date', 'VNI']]
+                                df = df.merge(vni, on="Date", how="left").ffill()
+                        except Exception as ex:
+                            self._vni_fetch_failed = True
+                            logger.warning(f"VN signal enrichment failed: {_safe_err(ex)}")
 
-                # Cache and return
-                cache.cache_price_data(base_symbol, "VN", df)
-                return df
-        except Exception as e:
-            logger.warning(f"vnstock failed for {base_symbol}: {_safe_err(e)}")
+                    # Cache and return
+                    cache.cache_price_data(base_symbol, "VN", df)
+                    return df
+            except Exception as e:
+                logger.warning(f"vnstock failed for {base_symbol}: {_safe_err(e)}")
 
         # Fallback to TvDatafeed (supports intraday better when available)
         if TVDATAFEED_AVAILABLE:
@@ -597,6 +607,9 @@ class VietnamStockProviderV2(AssetProvider):
             'dividend_yield': 0.0,
         }
 
+        if not VNSTOCK_AVAILABLE:
+            return fundamentals
+
         try:
             with _temporary_disable_broken_loopback_proxy():
                 stock = Vnstock().stock(symbol=base_symbol, source='VCI')
@@ -679,51 +692,52 @@ class VietnamStockProviderV2(AssetProvider):
         weekday = now.weekday()  # 0=Mon, 6=Sun
         is_market_open = (weekday < 5) and (9 <= hour_utc7 < 15)
 
-        try:
-            # Strategy 1: Intraday 1H data (most current during market hours)
-            with _temporary_disable_broken_loopback_proxy():
-                stock = Vnstock().stock(symbol=base_symbol, source='VCI')
-            end_str = (now + timedelta(days=1)).strftime('%Y-%m-%d')
-            start_str = (now - timedelta(days=3)).strftime('%Y-%m-%d')
-
-            with _temporary_disable_broken_loopback_proxy():
-                df_1h = stock.quote.history(
-                    start=start_str, end=end_str, interval='1H'
-                )
-
-            if df_1h is not None and not df_1h.empty:
-                latest = df_1h.iloc[-1]
-                price = float(latest['close'])
-
-                # Get previous day's close for change calculation
+        if VNSTOCK_AVAILABLE:
+            try:
+                # Strategy 1: Intraday 1H data (most current during market hours)
                 with _temporary_disable_broken_loopback_proxy():
-                    df_daily = stock.quote.history(
-                        start=(now - timedelta(days=5)).strftime('%Y-%m-%d'),
-                        end=end_str, interval='1D'
+                    stock = Vnstock().stock(symbol=base_symbol, source='VCI')
+                end_str = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+                start_str = (now - timedelta(days=3)).strftime('%Y-%m-%d')
+
+                with _temporary_disable_broken_loopback_proxy():
+                    df_1h = stock.quote.history(
+                        start=start_str, end=end_str, interval='1H'
                     )
-                prev_close = price
-                if df_daily is not None and len(df_daily) >= 2:
-                    prev_close = float(df_daily.iloc[-2]['close'])
-                elif df_daily is not None and len(df_daily) >= 1:
-                    prev_close = float(df_daily.iloc[-1]['close'])
 
-                change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+                if df_1h is not None and not df_1h.empty:
+                    latest = df_1h.iloc[-1]
+                    price = float(latest['close'])
 
-                return RealtimeQuote(
-                    symbol=symbol,
-                    price=price,
-                    change=round(change, 2),
-                    prev_close=prev_close,
-                    volume=float(latest.get('volume', 0)),
-                    high=float(latest.get('high', price)),
-                    low=float(latest.get('low', price)),
-                    timestamp=now.isoformat(),
-                    source='vnstock_intraday',
-                    is_market_open=is_market_open,
-                )
+                    # Get previous day's close for change calculation
+                    with _temporary_disable_broken_loopback_proxy():
+                        df_daily = stock.quote.history(
+                            start=(now - timedelta(days=5)).strftime('%Y-%m-%d'),
+                            end=end_str, interval='1D'
+                        )
+                    prev_close = price
+                    if df_daily is not None and len(df_daily) >= 2:
+                        prev_close = float(df_daily.iloc[-2]['close'])
+                    elif df_daily is not None and len(df_daily) >= 1:
+                        prev_close = float(df_daily.iloc[-1]['close'])
 
-        except Exception as e:
-            logger.debug(f"VN intraday quote failed for {base_symbol}: {e}")
+                    change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+
+                    return RealtimeQuote(
+                        symbol=symbol,
+                        price=price,
+                        change=round(change, 2),
+                        prev_close=prev_close,
+                        volume=float(latest.get('volume', 0)),
+                        high=float(latest.get('high', price)),
+                        low=float(latest.get('low', price)),
+                        timestamp=now.isoformat(),
+                        source='vnstock_intraday',
+                        is_market_open=is_market_open,
+                    )
+
+            except Exception as e:
+                logger.debug(f"VN intraday quote failed for {base_symbol}: {e}")
 
         # Strategy 2: TvDatafeed real-time
         if TVDATAFEED_AVAILABLE:
@@ -775,4 +789,4 @@ try:
     registry.register(_vn_provider)
     logger.success(f"Registered {_vn_provider.market_name} provider v2.0 (with cache + TvDatafeed)")
 except Exception as e:
-    logger.error(f"Failed to register Vietnam provider v2: {e}")
+    logger.error(f"Failed to register Vietnam provider v2: {e} — VN market disabled, other markets still available.")
