@@ -26,3 +26,5 @@ vnstock>=0.2.8
 # Uncomment below only if FinBERT sentiment is required:
 # transformers>=4.30
 # sentencepiece>=0.1.99
+
+# Last rebuild: 2026-05-25T07:11:26
