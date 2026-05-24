@@ -2523,21 +2523,37 @@ def render():
         with tab_chart:
             st.markdown("### 📈 Price & Forecast Band")
 
-            chart_ctrls = st.columns([1, 1, 1])
+            chart_ctrls = st.columns([1, 1, 1, 1])
             with chart_ctrls[0]:
                 show_ma = st.checkbox("MA (50/200)", value=False, key="chart_ma")
             with chart_ctrls[1]:
                 show_fibo = st.checkbox("Fibonacci", value=False, key="chart_fibo")
             with chart_ctrls[2]:
+                show_smc = st.checkbox("SMC Zones", value=False, key="chart_smc")
+            with chart_ctrls[3]:
                 st.markdown('<div style="text-align:right; color:#94a3b8; font-size:0.75rem; padding-top:10px;">PRO VIEW</div>', unsafe_allow_html=True)
 
             fig = go.Figure()
-            
-            # Base Price Line
-            fig.add_trace(go.Scatter(
-                x=df_train["Date"], y=df_train["Close"], 
-                name="History", line=dict(color="#00d4ff", width=2)
-            ))
+
+            # Base Price: Candlestick when SMC on, Line otherwise
+            if show_smc:
+                fig.add_trace(go.Candlestick(
+                    x=df_train["Date"],
+                    open=df_train["Open"],
+                    high=df_train["High"],
+                    low=df_train["Low"],
+                    close=df_train["Close"],
+                    name="Price",
+                    increasing_line_color="#22c55e",
+                    decreasing_line_color="#ef4444",
+                    increasing_fillcolor="rgba(34,197,94,0.7)",
+                    decreasing_fillcolor="rgba(239,68,68,0.7)",
+                ))
+            else:
+                fig.add_trace(go.Scatter(
+                    x=df_train["Date"], y=df_train["Close"],
+                    name="History", line=dict(color="#00d4ff", width=2)
+                ))
             
             # 1. Moving Averages Overlay
             if show_ma:
@@ -2576,7 +2592,84 @@ def render():
                                  dash="solid" if is_gold else "dash"),
                         mode="lines"
                     ))
-            
+
+            # 3. SMC Zones Overlay (Order Blocks, FVGs, Liquidity Pools)
+            if show_smc:
+                _x0 = df_train["Date"].iloc[max(0, len(df_train) - 80)]
+                _x1 = df_train["Date"].iloc[-1] + timedelta(days=6)
+
+                # ── Bullish Order Blocks (Demand / Support zones)
+                for _ob in smc_state.get("bull_obs", []):
+                    _label = f"SUP {_ob['bottom']:,.2f}–{_ob['top']:,.2f}"
+                    fig.add_hrect(
+                        y0=_ob["bottom"], y1=_ob["top"],
+                        x0=_x0, x1=_x1,
+                        fillcolor="rgba(34,197,94,0.10)",
+                        line=dict(color="rgba(34,197,94,0.65)", width=1.2),
+                        annotation_text=f"🟢 {_label}",
+                        annotation_position="top right",
+                        annotation_font=dict(color="#4ade80", size=11, family="monospace"),
+                    )
+
+                # ── Bearish Order Blocks (Supply / Resistance zones)
+                for _ob in smc_state.get("bear_obs", []):
+                    _label = f"RES {_ob['bottom']:,.2f}–{_ob['top']:,.2f}"
+                    fig.add_hrect(
+                        y0=_ob["bottom"], y1=_ob["top"],
+                        x0=_x0, x1=_x1,
+                        fillcolor="rgba(239,68,68,0.10)",
+                        line=dict(color="rgba(239,68,68,0.65)", width=1.2),
+                        annotation_text=f"🔴 {_label}",
+                        annotation_position="bottom right",
+                        annotation_font=dict(color="#f87171", size=11, family="monospace"),
+                    )
+
+                # ── Bullish FVG (Gap Up — unmitigated draw zones, blue)
+                for _fvg in smc_state.get("bull_fvgs", []):
+                    _opa = max(0.06, 0.18 * (1 - _fvg["filled_pct"]))
+                    fig.add_hrect(
+                        y0=_fvg["bottom"], y1=_fvg["top"],
+                        x0=_x0, x1=_x1,
+                        fillcolor=f"rgba(59,130,246,{_opa:.2f})",
+                        line=dict(color="rgba(96,165,250,0.55)", width=1, dash="dot"),
+                        annotation_text=f"FVG↑ {_fvg['bottom']:,.2f}",
+                        annotation_position="top left",
+                        annotation_font=dict(color="#93c5fd", size=10),
+                    )
+
+                # ── Bearish FVG (Gap Down, orange)
+                for _fvg in smc_state.get("bear_fvgs", []):
+                    _opa = max(0.06, 0.18 * (1 - _fvg["filled_pct"]))
+                    fig.add_hrect(
+                        y0=_fvg["bottom"], y1=_fvg["top"],
+                        x0=_x0, x1=_x1,
+                        fillcolor=f"rgba(249,115,22,{_opa:.2f})",
+                        line=dict(color="rgba(251,146,60,0.55)", width=1, dash="dot"),
+                        annotation_text=f"FVG↓ {_fvg['top']:,.2f}",
+                        annotation_position="bottom left",
+                        annotation_font=dict(color="#fdba74", size=10),
+                    )
+
+                # ── Buy-side Liquidity Pools (Equal Highs — purple dashed)
+                for _pool in smc_state.get("buy_liq", []):
+                    fig.add_hline(
+                        y=_pool["level"],
+                        line=dict(color="rgba(168,85,247,0.75)", width=1.5, dash="dot"),
+                        annotation_text=f"🟣 BSL {_pool['level']:,.2f} (×{_pool['touches']})",
+                        annotation_position="top left",
+                        annotation_font=dict(color="#c084fc", size=10),
+                    )
+
+                # ── Sell-side Liquidity Pools (Equal Lows — yellow dashed)
+                for _pool in smc_state.get("sell_liq", []):
+                    fig.add_hline(
+                        y=_pool["level"],
+                        line=dict(color="rgba(234,179,8,0.75)", width=1.5, dash="dot"),
+                        annotation_text=f"🟡 SSL {_pool['level']:,.2f} (×{_pool['touches']})",
+                        annotation_position="bottom left",
+                        annotation_font=dict(color="#fde68a", size=10),
+                    )
+
             # AI Target
             if 1 in predictions:
                 p1 = predictions[1]
@@ -2603,6 +2696,21 @@ def render():
                 hovermode="x unified"
             )
             st.plotly_chart(fig, width="stretch")
+
+            # SMC Legend
+            if show_smc:
+                st.markdown(
+                    '<div style="font-size:0.72rem;color:#64748b;padding:4px 0;">'
+                    '&nbsp;&nbsp;'
+                    '<span style="color:#4ade80;">🟢 SUP</span> = Bullish OB (Demand)&nbsp;&nbsp;'
+                    '<span style="color:#f87171;">🔴 RES</span> = Bearish OB (Supply)&nbsp;&nbsp;'
+                    '<span style="color:#93c5fd;">🔵 FVG↑</span> = Bullish Gap&nbsp;&nbsp;'
+                    '<span style="color:#fdba74;">🟠 FVG↓</span> = Bearish Gap&nbsp;&nbsp;'
+                    '<span style="color:#c084fc;">🟣 BSL</span> = Buy-side Liquidity&nbsp;&nbsp;'
+                    '<span style="color:#fde68a;">🟡 SSL</span> = Sell-side Liquidity'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
 
         with tab_vp:
             st.markdown("###  Volume Profile Analysis")
