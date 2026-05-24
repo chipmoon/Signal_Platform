@@ -1,4 +1,4 @@
-"""
+r"""
 Taiwan Stock Provider Plugin
 =============================
 Provides data for Taiwanese stocks using Yahoo Finance.
@@ -42,6 +42,11 @@ TAIWAN_STOCKS = {
     "2337.TW": {"Name": "旺宏", "Name_CN": "旺宏", "Sector": "Memory - Flash"},
     "2344.TW": {"Name": "華邦電", "Name_CN": "華邦電", "Sector": "Memory - DRAM/Flash"},
     "8299.TWO": {"Name": "Phison", "Name_CN": "群聯", "Sector": "Flash Controller"},
+    "8096.TWO": {"Name": "CoAsia", "Name_CN": "擎亞", "Sector": "Semiconductors - Distributor"},
+    "3036.TW": {"Name": "WT Microelectronics", "Name_CN": "文曄", "Sector": "Semiconductors - Distributor"},
+    "3209.TW": {"Name": "Supreme Electronics", "Name_CN": "至上", "Sector": "Semiconductors - Distributor"},
+    "3702.TW": {"Name": "WPG Holdings", "Name_CN": "大聯大", "Sector": "Semiconductors - Distributor"},
+    "6488.TWO": {"Name": "GlobalWafers", "Name_CN": "環球晶", "Sector": "Silicon Wafers"},
 
     # --- AI Servers, Computing & OEM ---
     "2317.TW": {"Name": "Foxconn (Hon Hai)", "Name_CN": "鴻海", "Sector": "Electronics OEM/AI"},
@@ -206,7 +211,7 @@ class TaiwanStockProvider(AssetProvider):
         # Priority 1: Hot Stocks from hardcoded list (if they match)
         for symbol, info in TAIWAN_STOCKS.items():
             stock_code = symbol.replace('.TW', '').replace('.TWO', '')
-            if (q_clean and q_clean == stock_code.lower()) or (query_lower and query_lower in info['Name'].lower()):
+            if (q_clean and q_clean == stock_code.lower()) or (query_lower and (query_lower in info['Name'].lower() or query_lower in info.get('Name_CN', '').lower())):
                 results.append(
                     AssetInfo(
                         symbol=symbol,
