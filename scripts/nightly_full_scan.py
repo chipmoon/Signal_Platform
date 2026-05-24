@@ -1,4 +1,4 @@
-"""
+﻿"""
 Nightly Full-Universe Pre-Scan Pipeline
 ========================================
 Chay moi toi luc 21:00 (Taiwan UTC+8) tren may local:
@@ -72,27 +72,48 @@ def _fetch_full_vn_universe() -> list[str]:
 
 def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
     """
-    Run the full AlphaScannerEngine with a dynamic universe.
-    Temporarily injects the full symbol list into the engine.
+    Run AlphaScannerEngine with nightly-optimized config:
+    - Shuffles symbols to avoid alphabetical bias (A-B dominating)
+    - Overrides scan_total_timeout_sec 50s -> 1800s (30 min budget)
+    - Increases worker counts for faster batch throughput
     """
+    import random
     import src.strategies.alpha_scanner as scanner_mod
 
     original_extended = scanner_mod.VN_UNIVERSE_EXTENDED[:]
+    original_config = scanner_mod.SCAN_CONFIG.copy()
 
     try:
-        # Inject full universe into the engine module
-        scanner_mod.VN_UNIVERSE_EXTENDED = vn_symbols
-        logger.info(f"Running full scan: {len(vn_symbols)} VN symbols...")
+        # Shuffle to cover all alphabet ranges equally
+        shuffled = vn_symbols[:]
+        random.shuffle(shuffled)
+        scanner_mod.VN_UNIVERSE_EXTENDED = shuffled
+
+        # Override timeouts for nightly batch (no UI waiting)
+        scanner_mod.SCAN_CONFIG = {
+            **original_config,
+            "tier1_max_workers": 12,
+            "tier1_max_workers_vn": 8,
+            "tier1_timeout_sec": 600,
+            "tier2_max_workers": 8,
+            "tier2_max_workers_vn": 6,
+            "tier2_timeout_sec": 900,
+            "scan_total_timeout_sec": 1800,
+            "tier1_top_n": 120,
+            "wyckoff_top_n": 80,
+            "tier2_top_n": top_n * 3,
+        }
+
+        logger.info(f"Running full scan: {len(vn_symbols)} VN symbols (shuffled, 30min budget)...")
 
         from src.strategies.alpha_scanner import AlphaScannerEngine
 
         start_time = datetime.now()
 
         def _progress(p: float):
-            elapsed = (datetime.now() - start_time).seconds
+            elapsed = int((datetime.now() - start_time).total_seconds())
             pct = int(p * 100)
-            if pct % 10 == 0:
-                logger.info(f"  Scan progress: {pct}% ({elapsed}s elapsed)")
+            logger.info(f"  Scan progress: {pct}% | {elapsed}s elapsed")
 
         engine = AlphaScannerEngine(
             extended_universe=True,
@@ -101,14 +122,15 @@ def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
         )
         results = engine.scan_universe(progress_callback=_progress)
 
-        elapsed = (datetime.now() - start_time).seconds
+        elapsed = int((datetime.now() - start_time).total_seconds())
         logger.success(f"Scan complete: {len(results)} candidates in {elapsed}s")
+
+        results.sort(key=lambda x: x.get("institutional_score", -999), reverse=True)
         return results[:top_n]
 
     finally:
-        # Always restore original list
         scanner_mod.VN_UNIVERSE_EXTENDED = original_extended
-
+        scanner_mod.SCAN_CONFIG = original_config
 
 def _save_results(results: list[dict], top_n: int) -> None:
     """Save scan results as JSON for Streamlit Cloud to read."""
