@@ -69,15 +69,58 @@ def _to_yf_ticker(symbol: str, market: str) -> str:
 
 # ─── Fetch OHLCV for a given timeframe ────────────────────────────────────────
 
-def _fetch_tf(yf_ticker: str, interval: str, period: str) -> pd.DataFrame:
-    """Fetch OHLCV from Yahoo Finance for a given interval/period."""
+def _fetch_tf(yf_ticker: str, interval: str, period: str, symbol: str = "", market: str = "") -> pd.DataFrame:
+    """Fetch OHLCV from Yahoo Finance for a given interval/period, with offline/cache fallback."""
+    # Standardize symbol & market if not provided
+    if not symbol and ".VN" in yf_ticker:
+        symbol = yf_ticker.replace(".VN", "")
+        market = "VN"
+
     try:
         ticker = yf.Ticker(yf_ticker)
         df = ticker.history(period=period, interval=interval, auto_adjust=True)
-        return _normalize_df(df)
+        if not df.empty:
+            return _normalize_df(df)
     except Exception as e:
         logger.warning(f"MTF fetch failed [{yf_ticker} {interval}]: {e}")
-        return pd.DataFrame()
+
+    # Fallback for VN stocks when yfinance is blocked/fails
+    if market == "VN" or ".VN" in yf_ticker:
+        clean_sym = symbol or yf_ticker.replace(".VN", "")
+        from pathlib import Path
+        cache_path = Path(__file__).resolve().parents[2] / ".cache" / "prices" / f"{clean_sym}_VN.parquet"
+        if cache_path.exists():
+            try:
+                daily_df = pd.read_parquet(cache_path, engine="pyarrow")
+                if not daily_df.empty:
+                    daily_df = _normalize_df(daily_df)
+                    
+                    if interval == "1wk":
+                        # Resample daily to weekly
+                        daily_df["Date"] = pd.to_datetime(daily_df["Date"])
+                        daily_df = daily_df.sort_values("Date")
+                        daily_df.set_index("Date", inplace=True)
+                        weekly_df = daily_df.resample("W").agg({
+                            "Open": "first",
+                            "High": "max",
+                            "Low": "min",
+                            "Close": "last",
+                            "Volume": "sum"
+                        }).dropna().reset_index()
+                        logger.info(f"MTF: Resampled {clean_sym} daily cache to weekly ({len(weekly_df)} rows)")
+                        return weekly_df
+                        
+                    elif interval == "4h":
+                        # No intraday cache, so we use daily data as a proxy fallback
+                        logger.info(f"MTF: Using {clean_sym} daily cache as 4H proxy")
+                        return daily_df
+                        
+                    elif interval == "1d":
+                        return daily_df
+            except Exception as ex:
+                logger.error(f"Failed to load daily cache fallback for {clean_sym}: {ex}")
+
+    return pd.DataFrame()
 
 
 # ─── Analyze one timeframe ────────────────────────────────────────────────────
@@ -181,7 +224,7 @@ def compute_mtf_confluence(
     results = {}
 
     # ── Weekly ──────────────────────────────────────────
-    df_weekly = _fetch_tf(yf_ticker, "1wk", "2y")
+    df_weekly = _fetch_tf(yf_ticker, "1wk", "2y", symbol=symbol, market=market)
     results["Weekly"] = _analyze_tf(df_weekly, "Weekly")
 
     # ── Daily (reuse if provided) ────────────────────────
@@ -189,11 +232,11 @@ def compute_mtf_confluence(
         df_d = _normalize_df(df_daily.copy())
         results["Daily"] = _analyze_tf(df_d, "Daily")
     else:
-        df_d = _fetch_tf(yf_ticker, "1d", "1y")
+        df_d = _fetch_tf(yf_ticker, "1d", "1y", symbol=symbol, market=market)
         results["Daily"] = _analyze_tf(df_d, "Daily")
 
     # ── 4H ──────────────────────────────────────────────
-    df_4h = _fetch_tf(yf_ticker, "4h", "60d")
+    df_4h = _fetch_tf(yf_ticker, "4h", "60d", symbol=symbol, market=market)
     results["4H"] = _analyze_tf(df_4h, "4H")
 
     # ── Confluence Calculation ───────────────────────────

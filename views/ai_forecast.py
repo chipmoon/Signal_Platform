@@ -2193,6 +2193,31 @@ def render():
             import yfinance as _yf
             _yf_sym = f"{symbol}.VN" if market == "VN" else symbol
             _df_wk = _yf.Ticker(_yf_sym).history(period="2y", interval="1wk", auto_adjust=True)
+            
+            # Fallback for VN stocks if yfinance is blocked/empty
+            if _df_wk.empty and market == "VN":
+                from pathlib import Path
+                import pandas as pd
+                _cache_p = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{symbol}_VN.parquet"
+                if _cache_p.exists():
+                    _df_daily = pd.read_parquet(_cache_p, engine="pyarrow")
+                    if not _df_daily.empty:
+                        _col_map = {c: c.capitalize() for c in _df_daily.columns}
+                        _col_map.update({"Adj close": "Close", "Adj Close": "Close"})
+                        _df_daily = _df_daily.rename(columns=_col_map)
+                        if "Date" in _df_daily.columns:
+                            _df_daily["Date"] = pd.to_datetime(_df_daily["Date"])
+                            _df_daily = _df_daily.sort_values("Date")
+                            _df_daily.set_index("Date", inplace=True)
+                            _df_wk = _df_daily.resample("W").agg({
+                                "Open": "first",
+                                "High": "max",
+                                "Low": "min",
+                                "Close": "last",
+                                "Volume": "sum"
+                            }).dropna().reset_index()
+                            print(f"Elliott Wave: Resampled {symbol} daily cache to weekly ({len(_df_wk)} rows)")
+
             if not _df_wk.empty:
                 _df_wk = _df_wk.reset_index()
                 _df_wk.columns = [str(c) for c in _df_wk.columns]

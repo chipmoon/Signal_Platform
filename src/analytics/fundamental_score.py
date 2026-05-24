@@ -83,6 +83,126 @@ def _safe_float(val, default=None) -> Optional[float]:
         return default
 
 
+def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
+    """Fetch and calculate all 7 Buffett-style fundamental metrics for VN stocks."""
+    base_symbol = symbol.replace('.VN', '').upper()
+    data = {
+        "roe": None,
+        "debt_to_equity": None,
+        "eps_growth": None,
+        "pe_ratio": None,
+        "fcf_yield": None,
+        "revenue_growth": None,
+        "profit_margin": None
+    }
+    
+    try:
+        from vnstock import Vnstock
+        import pandas as pd
+        stock = Vnstock().stock(symbol=base_symbol, source="VCI")
+        inc = stock.finance.income_statement(period="quarter", lang="vi")
+        bs = stock.finance.balance_sheet(period="quarter", lang="vi")
+        cf = stock.finance.cash_flow(period="quarter", lang="vi")
+    except Exception as e:
+        logger.warning(f"Failed to fetch vnstock reports for {base_symbol}: {e}")
+        return data
+
+    try:
+        meta_cols = {'item_id', 'item_en', 'item'}
+        data_cols = [c for c in inc.columns if c not in meta_cols]
+        data_cols = sorted(data_cols, reverse=True)
+        if not data_cols:
+            return data
+
+        def get_row_values(df, item_id):
+            row = df[df['item_id'] == item_id]
+            if row.empty:
+                return None
+            return {col: float(row[col].values[0]) for col in data_cols if pd.notna(row[col].values[0])}
+
+        net_sales = get_row_values(inc, 'isa3') or get_row_values(inc, 'isa1')
+        net_profit = get_row_values(inc, 'isa20')
+        eps = get_row_values(inc, 'isa23')
+        total_assets = get_row_values(bs, 'bsa53')
+        equity = get_row_values(bs, 'bsa78')
+        ocf = get_row_values(cf, 'cfa18')
+        capex = get_row_values(cf, 'cfa19')
+
+        def ttm_sum(values_dict):
+            if not values_dict:
+                return None
+            vals = [values_dict[q] for q in data_cols if q in values_dict]
+            if len(vals) < 4:
+                return sum(vals) * (4.0 / len(vals)) if vals else None
+            return sum(vals[:4])
+
+        ttm_sales = ttm_sum(net_sales)
+        ttm_profit = ttm_sum(net_profit)
+        ttm_ocf = ttm_sum(ocf)
+        ttm_capex = ttm_sum(capex)
+
+        latest_q = data_cols[0]
+        oldest_q = data_cols[-1]
+
+        latest_equity = equity.get(latest_q) if equity else None
+        latest_assets = total_assets.get(latest_q) if total_assets else None
+
+        # 1. ROE = TTM Profit / Latest Equity
+        if ttm_profit is not None and latest_equity:
+            data["roe"] = ttm_profit / latest_equity
+
+        # 2. Debt to Equity = (Total Assets - Equity) / Equity
+        if latest_assets and latest_equity:
+            data["debt_to_equity"] = (latest_assets - latest_equity) / latest_equity
+
+        # 3. EPS Growth = Profit Growth between oldest and latest quarter
+        if net_profit and latest_q in net_profit and oldest_q in net_profit:
+            p_latest = net_profit[latest_q]
+            p_oldest = net_profit[oldest_q]
+            if p_oldest != 0:
+                data["eps_growth"] = (p_latest - p_oldest) / abs(p_oldest)
+
+        # 4. Revenue Growth
+        if net_sales and latest_q in net_sales and oldest_q in net_sales:
+            s_latest = net_sales[latest_q]
+            s_oldest = net_sales[oldest_q]
+            if s_oldest != 0:
+                data["revenue_growth"] = (s_latest - s_oldest) / abs(s_oldest)
+
+        # 5. Profit Margin
+        if ttm_profit is not None and ttm_sales:
+            data["profit_margin"] = ttm_profit / ttm_sales
+
+        # 6. Free Cash Flow
+        fcf = None
+        if ttm_ocf is not None and ttm_capex is not None:
+            fcf = ttm_ocf + ttm_capex # CapEx is negative in CF report
+
+        # 7. FCF Yield & PE Ratio need marketCap / price from yfinance
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(f"{base_symbol}.VN")
+            mkt_cap = ticker.info.get("marketCap")
+            price = ticker.info.get("regularMarketPrice") or ticker.info.get("previousClose")
+            
+            if fcf is not None and mkt_cap and mkt_cap > 0:
+                data["fcf_yield"] = fcf / mkt_cap
+                
+            if price and ttm_profit and mkt_cap:
+                shares = mkt_cap / price
+                if shares > 0:
+                    ttm_eps = ttm_profit / shares
+                    if ttm_eps > 0:
+                        data["pe_ratio"] = price / ttm_eps
+        except Exception as e:
+            logger.debug(f"Failed to get price/marketcap from yfinance for {base_symbol}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error computing vnstock fundamentals for {base_symbol}: {e}")
+
+    return data
+
+
 def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
     """
     Compute Fundamental Quality Score for a given symbol.
@@ -90,41 +210,81 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
     """
     fs = FundamentalScore()
     yf_ticker = _to_yf_ticker(symbol, market)
-
-    try:
-        ticker = yf.Ticker(yf_ticker)
-        info = ticker.info
-    except Exception as e:
-        logger.warning(f"FundamentalScore: could not fetch {yf_ticker}: {e}")
-        fs.caveats.append("Yahoo Finance data unavailable")
-        return fs
-
-    if not info or info.get("symbol") is None:
-        fs.caveats.append("No fundamental data returned by Yahoo Finance")
-        return fs
-
-    # ── Extract raw values ─────────────────────────────────────────────────
-    fs.roe              = _safe_float(info.get("returnOnEquity"))
-    fs.debt_to_equity   = _safe_float(info.get("debtToEquity"))
-    fs.pe_ratio         = _safe_float(info.get("trailingPE") or info.get("forwardPE"))
-    fs.profit_margin    = _safe_float(info.get("profitMargins"))
-    fs.revenue_growth   = _safe_float(info.get("revenueGrowth"))
-
-    # EPS growth: use earningsGrowth or compute from trailingEps/forwardEps
-    fs.eps_growth = _safe_float(info.get("earningsGrowth"))
-    if fs.eps_growth is None:
-        trailing = _safe_float(info.get("trailingEps"))
-        forward  = _safe_float(info.get("forwardEps"))
-        if trailing and forward and trailing != 0:
-            fs.eps_growth = (forward - trailing) / abs(trailing)
-
-    # FCF Yield = FreeCashFlow / MarketCap
-    fcf = _safe_float(info.get("freeCashflow"))
-    mkt_cap = _safe_float(info.get("marketCap"))
-    if fcf and mkt_cap and mkt_cap > 0:
-        fs.fcf_yield = fcf / mkt_cap
+    
+    # 1. Try local cache first
+    from src.cache_manager import cache
+    cached = cache.get_cached_fundamentals(symbol, market)
+    
+    if cached:
+        fs.roe = _safe_float(cached.get("roe"))
+        fs.debt_to_equity = _safe_float(cached.get("debt_to_equity"))
+        fs.eps_growth = _safe_float(cached.get("eps_growth"))
+        fs.pe_ratio = _safe_float(cached.get("pe_ratio"))
+        fs.fcf_yield = _safe_float(cached.get("fcf_yield"))
+        fs.revenue_growth = _safe_float(cached.get("revenue_growth"))
+        fs.profit_margin = _safe_float(cached.get("profit_margin"))
+        logger.info(f"Loaded fundamentals from cache for {symbol} ({market})")
     else:
-        fs.fcf_yield = None
+        # 2. Fetch fresh data
+        data = None
+        if market == "VN":
+            data = _fetch_vn_fundamentals_from_vnstock(symbol)
+            # Check if we successfully fetched anything
+            if any(v is not None for v in data.values()):
+                cache.cache_fundamentals(symbol, market, data)
+        else:
+            try:
+                ticker = yf.Ticker(yf_ticker)
+                info = ticker.info
+                if info and info.get("symbol") is not None:
+                    # Normalize yfinance values
+                    roe = _safe_float(info.get("returnOnEquity"))
+                    debt_to_equity = _safe_float(info.get("debtToEquity"))
+                    if debt_to_equity is not None and debt_to_equity > 10:
+                        debt_to_equity /= 100.0  # Convert % to ratio
+                        
+                    pe_ratio = _safe_float(info.get("trailingPE") or info.get("forwardPE"))
+                    profit_margin = _safe_float(info.get("profitMargins"))
+                    revenue_growth = _safe_float(info.get("revenueGrowth"))
+                    
+                    eps_growth = _safe_float(info.get("earningsGrowth"))
+                    if eps_growth is None:
+                        trailing = _safe_float(info.get("trailingEps"))
+                        forward  = _safe_float(info.get("forwardEps"))
+                        if trailing and forward and trailing != 0:
+                            eps_growth = (forward - trailing) / abs(trailing)
+                            
+                    fcf = _safe_float(info.get("freeCashflow"))
+                    mkt_cap = _safe_float(info.get("marketCap"))
+                    fcf_yield = None
+                    if fcf and mkt_cap and mkt_cap > 0:
+                        fcf_yield = fcf / mkt_cap
+                        
+                    data = {
+                        "roe": roe,
+                        "debt_to_equity": debt_to_equity,
+                        "eps_growth": eps_growth,
+                        "pe_ratio": pe_ratio,
+                        "fcf_yield": fcf_yield,
+                        "revenue_growth": revenue_growth,
+                        "profit_margin": profit_margin
+                    }
+                    cache.cache_fundamentals(symbol, market, data)
+            except Exception as e:
+                logger.warning(f"FundamentalScore: could not fetch {yf_ticker}: {e}")
+                fs.caveats.append("Yahoo Finance data unavailable")
+                
+        if data:
+            fs.roe = _safe_float(data.get("roe"))
+            fs.debt_to_equity = _safe_float(data.get("debt_to_equity"))
+            fs.eps_growth = _safe_float(data.get("eps_growth"))
+            fs.pe_ratio = _safe_float(data.get("pe_ratio"))
+            fs.fcf_yield = _safe_float(data.get("fcf_yield"))
+            fs.revenue_growth = _safe_float(data.get("revenue_growth"))
+            fs.profit_margin = _safe_float(data.get("profit_margin"))
+        else:
+            fs.caveats.append("Fundamental data unavailable (check cache / connections)")
+            return fs
 
     # ── Scoring ───────────────────────────────────────────────────────────
     available_fields = 0
@@ -143,14 +303,13 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
         return 0
 
     # ROE ≥ 15% → +20; ≥ 10% → +12; ≥ 5% → +6
-    roe_val = fs.roe if fs.roe is not None else None
-    fs.roe_score = score_field(roe_val, [0.15, 0.10, 0.05], [20, 12, 6], 20)
+    fs.roe_score = score_field(fs.roe, [0.15, 0.10, 0.05], [20, 12, 6], 20)
 
     # Debt/Equity: LOW is better. ≤ 0.5 → +15; ≤ 1.0 → +10; ≤ 2.0 → +5
     if fs.debt_to_equity is not None:
         available_fields += 1
         total_possible += 15
-        d = fs.debt_to_equity / 100 if fs.debt_to_equity > 10 else fs.debt_to_equity  # normalize %
+        d = fs.debt_to_equity
         if d <= 0.5:
             fs.debt_score = 15
         elif d <= 1.0:

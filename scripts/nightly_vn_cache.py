@@ -183,24 +183,38 @@ def main():
     for i, sym in enumerate(symbols, 1):
         logger.info(f"[{i}/{len(symbols)}] Fetching {sym}...")
 
-        # Try vnstock first (local — works perfectly)
+        # 1. Fetch prices
+        price_ok = False
         df = fetch_with_vnstock(sym, start, end)
         if df is not None and not df.empty:
             save_cache(sym, df, cache_dir)
             ok_vnstock.append(sym)
-            logger.success(f"  {sym} via vnstock — {len(df)} rows")
-            continue
+            logger.success(f"  {sym} prices via vnstock — {len(df)} rows")
+            price_ok = True
+        else:
+            df = fetch_with_yfinance(sym, start, end)
+            if df is not None and not df.empty:
+                save_cache(sym, df, cache_dir)
+                ok_yfinance.append(sym)
+                logger.warning(f"  {sym} prices via yfinance fallback — {len(df)} rows")
+                price_ok = True
 
-        # Fallback to yfinance
-        df = fetch_with_yfinance(sym, start, end)
-        if df is not None and not df.empty:
-            save_cache(sym, df, cache_dir)
-            ok_yfinance.append(sym)
-            logger.warning(f"  {sym} via yfinance fallback — {len(df)} rows")
-            continue
+        if not price_ok:
+            failed.append(sym)
+            logger.error(f"  {sym} prices FAILED all sources")
 
-        failed.append(sym)
-        logger.error(f"  {sym} FAILED all sources")
+        # 2. Fetch and cache fundamentals
+        try:
+            from src.analytics.fundamental_score import _fetch_vn_fundamentals_from_vnstock
+            from src.cache_manager import cache as cm
+            fund_data = _fetch_vn_fundamentals_from_vnstock(sym)
+            if any(v is not None for v in fund_data.values()):
+                cm.cache_fundamentals(sym, "VN", fund_data)
+                logger.success(f"  {sym} fundamentals cached successfully")
+            else:
+                logger.warning(f"  {sym} fundamentals empty")
+        except Exception as e:
+            logger.error(f"  {sym} fundamentals fetch error: {e}")
 
     # Summary
     logger.info("=" * 50)
