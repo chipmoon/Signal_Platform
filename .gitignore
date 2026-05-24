@@ -19,9 +19,9 @@ env/
 .env
 .streamlit/secrets.toml
 
-# Cache & data
-.cache/
-.matplotlib/
+# Cache — allow .cache/prices/*.parquet for nightly VN pipeline (Option A)
+# DO NOT ignore .cache/ — Streamlit Cloud reads from it
+# .cache/
 .vnstock/
 .pytest_cache/
 AppData/

@@ -93,6 +93,31 @@ def _safe_err(e: Exception) -> str:
         return e.__class__.__name__
 
 
+# ── Hardcoded top-95 VN stocks confirmed on yfinance ──────────────────────────
+# Used as fallback when vnstock API is blocked (e.g. Streamlit Cloud)
+# Update this list by running: python scripts/check_yfinance_vn_coverage.py
+_TOP_95_VN: List[Dict[str, str]] = [
+    {"symbol": s, "name": s, "exchange": "HOSE", "sector": "Other"}
+    for s in [
+        "VCB","BID","CTG","TCB","MBB","ACB","VPB","STB","HDB","LPB",
+        "SSB","EIB","OCB","TPB","SHB","EVF",
+        "VIC","VHM","VRE","KDH","NVL","PDR","DXG","IJC","TDC",
+        "SIP","HDC","HAG","LCG","VPI","CII","HDG","PC1","VCG",
+        "HPG","GAS","PLX","GVR","BSR","DGC","PHR","DPR","TRC",
+        "BMP","AAA","LSS","PPC","NT2","POW","GEG","BWE","KHP",
+        "REE","GEX","HHV","PVT",
+        "SAB","MSN","VNM","MWG","PNJ","TLG","DHC","DBC","PAN",
+        "VHC","HAX","HAH","VTO","ASM","CSV",
+        "FPT","CMG","VNE",
+        "VJC","GMD",
+        "SSI","VCI","HCM","VND","BSI","ORS","CTS","FTS","VDS",
+        "CTD","FCN",
+        "AGR","DPM","DCM",
+        "BVH","BCM","SCS","TDM","TV2",
+    ]
+]
+
+
 class VietnamStockProviderV2(AssetProvider):
     """Enhanced Vietnam stock provider with caching and fallback."""
 
@@ -149,112 +174,77 @@ class VietnamStockProviderV2(AssetProvider):
         return self._tv
 
     def _ensure_initialized(self) -> None:
-        """Lazy load stock list with cache."""
+        """Lazy load stock list with 4-tier fallback.
+
+        Tier 1: Fresh cache  (.cache/stock_list_VN.parquet < 24h)
+        Tier 2: Stale cache  (any age)
+        Tier 3: vnstock API  (works local, blocked on cloud)
+        Tier 4: Hardcoded    (_TOP_95_VN always works)
+        """
         if self._initialized:
             return
-        
-        # If vnstock is not available, we cannot initialize the stock list
-        if not VNSTOCK_AVAILABLE:
-            self._initialized = True
-            return
 
-        # Try cache first
+        # Tier 1: Fresh cache
         cached = cache.get_cached_stock_list("VN", max_age_hours=24)
         if cached and len(cached) > 0:
             self._stock_list = cached
-            self._industry_map = {s['symbol']: s.get('sector', 'Other') for s in cached}
+            self._industry_map = {s["symbol"]: s.get("sector", "Other") for s in cached}
             self._initialized = True
             logger.success(f"Loaded {len(cached)} VN stocks from cache")
             return
-        if cached is not None and len(cached) == 0:
-            logger.warning("VN cache file exists but is empty, ignoring fresh cache")
 
-        # Fallback to stale cache if available and non-empty
-        stale_cached = cache.get_cached_stock_list("VN", max_age_hours=999999)
-        if stale_cached and len(stale_cached) > 0:
-            self._stock_list = stale_cached
-            self._industry_map = {s['symbol']: s.get('sector', 'Other') for s in stale_cached}
+        # Tier 2: Stale cache (any age)
+        stale = cache.get_cached_stock_list("VN", max_age_hours=999999)
+        if stale and len(stale) > 0:
+            self._stock_list = stale
+            self._industry_map = {s["symbol"]: s.get("sector", "Other") for s in stale}
             self._initialized = True
-            logger.warning(f"Loaded {len(stale_cached)} VN stocks from stale cache")
+            logger.warning(f"Loaded {len(stale)} VN stocks from stale cache")
             return
 
-        # Fetch from API
-        try:
-            logger.info("Fetching Vietnam stock list from vnstock API...")
-            with _temporary_disable_broken_loopback_proxy():
-                listing = Listing()
-                df_listing = listing.symbols_by_exchange(lang='vi')
-
-            # Filter to HOSE and HNX
-            if 'exchange' in df_listing.columns:
-                df_listing = df_listing[df_listing['exchange'].isin(['HOSE', 'HNX'])].copy()
-
-            # Filter to stocks only
-            if 'type' in df_listing.columns:
-                for stock_type in ['STOCK', 'Stock', 'stock']:
-                    if (df_listing['type'] == stock_type).sum() > 0:
-                        df_listing = df_listing[df_listing['type'] == stock_type].copy()
-                        break
-
-            # Deduplicate symbols before industry merge to prevent cartesian explosion
-            df_listing = df_listing.drop_duplicates(subset=['symbol']).copy()
-
-            # Get industry data
+        # Tier 3: vnstock API (local only)
+        if VNSTOCK_AVAILABLE:
             try:
+                logger.info("Fetching VN stock list from vnstock API...")
                 with _temporary_disable_broken_loopback_proxy():
-                    df_industries = listing.symbols_by_industries(lang='vi')
-                if 'industry_name' in df_industries.columns:
-                    df_listing = df_listing.merge(
-                        df_industries[['symbol', 'industry_name']],
-                        on='symbol',
-                        how='left'
-                    )
-                    self._industry_map = dict(zip(
-                        df_listing['symbol'],
-                        df_listing['industry_name'].fillna('Other')
-                    ))
+                    listing = Listing()
+                    df_listing = listing.symbols_by_exchange(lang='vi')
+                if 'exchange' in df_listing.columns:
+                    df_listing = df_listing[df_listing['exchange'].isin(['HOSE', 'HNX'])].copy()
+                if 'type' in df_listing.columns:
+                    for t in ['STOCK', 'Stock', 'stock']:
+                        if (df_listing['type'] == t).sum() > 0:
+                            df_listing = df_listing[df_listing['type'] == t].copy()
+                            break
+                df_listing = df_listing.drop_duplicates(subset=['symbol']).copy()
+                try:
+                    with _temporary_disable_broken_loopback_proxy():
+                        df_ind = listing.symbols_by_industries(lang='vi')
+                    if 'industry_name' in df_ind.columns:
+                        df_listing = df_listing.merge(df_ind[['symbol','industry_name']], on='symbol', how='left')
+                        self._industry_map = dict(zip(df_listing['symbol'], df_listing['industry_name'].fillna('Other')))
+                except Exception:
+                    self._industry_map = {}
+                for _, row in df_listing.iterrows():
+                    self._stock_list.append({
+                        'symbol': row['symbol'],
+                        'name': row.get('organ_short_name', row['symbol']),
+                        'exchange': row.get('exchange', 'VN'),
+                        'sector': self._industry_map.get(row['symbol'], 'Other'),
+                    })
+                if self._stock_list:
+                    cache.cache_stock_list("VN", self._stock_list)
+                self._initialized = True
+                logger.success(f"Loaded {len(self._stock_list)} VN stocks from API")
+                return
             except Exception as e:
-                logger.warning(f"Could not load industry data: {e}")
-                self._industry_map = {}
+                logger.warning(f"vnstock list failed: {_safe_err(e)}")
 
-            # Build stock list
-            for _, row in df_listing.iterrows():
-                self._stock_list.append({
-                    'symbol': row['symbol'],
-                    'name': row.get('organ_short_name', row['symbol']),
-                    'exchange': row.get('exchange', 'VN'),
-                    'sector': self._industry_map.get(row['symbol'], 'Other'),
-                })
-
-            # Cache it
-            if self._stock_list:
-                cache.cache_stock_list("VN", self._stock_list)
-
-            self._initialized = True
-            logger.success(f"Loaded {len(self._stock_list)} Vietnam stocks from API")
-
-        except Exception as e:
-            logger.error(f"Failed to load stock list: {e}")
-            # Final fallback: derive symbol universe from local foundation dataset
-            try:
-                foundation_path = (
-                    Path(__file__).resolve().parents[2] / "data" / "foundation_vn_3y.parquet"
-                )
-                if foundation_path.exists():
-                    df = pd.read_parquet(foundation_path, columns=["Symbol"])
-                    symbols = sorted({str(s).strip().upper() for s in df["Symbol"].dropna().tolist() if str(s).strip()})
-                    if symbols:
-                        self._stock_list = [
-                            {"symbol": sym, "name": sym, "exchange": "VN", "sector": "Other"}
-                            for sym in symbols
-                        ]
-                        self._industry_map = {s["symbol"]: "Other" for s in self._stock_list}
-                        logger.warning(
-                            f"Loaded {len(self._stock_list)} VN symbols from local foundation fallback"
-                        )
-            except Exception as fallback_err:
-                logger.error(f"VN foundation fallback failed: {fallback_err}")
-            self._initialized = True  # Don't retry on every call
+        # Tier 4: Hardcoded top-95 (always works on Streamlit Cloud)
+        self._stock_list = _TOP_95_VN
+        self._industry_map = {}
+        self._initialized = True
+        logger.warning("Using hardcoded top-95 VN list. Run scripts/nightly_vn_cache.py for full list.")
 
     @property
     def market_id(self) -> str:
@@ -412,27 +402,29 @@ class VietnamStockProviderV2(AssetProvider):
             except Exception as e:
                 logger.warning(f"yfinance intraday fallback failed for {base_symbol}: {_safe_err(e)}")
 
-        # Last resort: stale cache
-        stale_cache = cache.get_cached_price_data(
-            base_symbol, "VN", max_age_hours=999999, start=start, end=end
-        )
-        if stale_cache is not None and not stale_cache.empty:
-            return stale_cache
-
-        # For intraday, if we reach here, just return empty instead of crashing
+        # For intraday: return empty instead of crashing
         if interval_l != "1d":
             logger.warning(f"Could not fetch intraday data for {base_symbol}, returning empty.")
             return pd.DataFrame()
 
-        # Fallback to yfinance as ultimate resort (works on Streamlit Cloud)
+        # Daily fallback chain: yfinance → stale cache → error
         try:
             df = self._fetch_from_yfinance(base_symbol, start, end, interval)
             if df is not None and not df.empty:
+                cache.cache_price_data(base_symbol, "VN", df)  # warm cache
                 return df
         except Exception as e:
             logger.warning(f"yfinance fallback failed for {base_symbol}: {_safe_err(e)}")
 
-        raise ValueError(f"Could not fetch data for {base_symbol} from any source")
+        # Stale cache as absolute last resort
+        stale_cache = cache.get_cached_price_data(
+            base_symbol, "VN", max_age_hours=999_999, start=start, end=end
+        )
+        if stale_cache is not None and not stale_cache.empty:
+            logger.warning(f"Serving stale cache for {base_symbol}")
+            return stale_cache
+
+        raise ValueError(f"No data for {base_symbol} from any source (vnstock/TvDatafeed/yfinance/cache)")
 
     def _fetch_from_yfinance(self, symbol: str, start: str, end: str, interval: str) -> Optional[pd.DataFrame]:
         """Ultimate fallback using Yahoo Finance (adds .VN suffix)."""
