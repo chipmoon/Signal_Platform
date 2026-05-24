@@ -2414,27 +2414,111 @@ def render():
                             st.caption(snip + "...")
                         st.divider()
 
-            # ── Section 3: Senate Debate (uses existing ML data) ──────────
+            # ── Section 3: Senate Debate — 5 Members + Volume Intelligence ──
             st.markdown("---")
-            st.markdown("#### ⚖️ AI Senate Debate")
-            st.caption("Hội đồng AI Bull-Bear-Quant tranh luận về cổ phiếu này.")
-            if st.button("⚖ Summon the Senate (AI Analysis)", key="senate_btn"):
+            st.markdown("#### ⚖️ AI Senate Debate — 5 Thành viên")
+            st.caption(
+                "🐂 Bull · 🐻 Bear · 🤖 Quant · 💰 Smart Money · 📰 Macro — "
+                "tranh luận đa chiều với dữ liệu volume định lượng."
+            )
+
+            # Compute volume intelligence (Phase 1 — always available)
+            try:
+                from src.analytics.volume_intelligence import compute_volume_intelligence
+                _vol_data = compute_volume_intelligence(df_train)
+            except Exception as _ve:
+                logger.debug(f"Volume intelligence error: {_ve}")
+                _vol_data = {}
+
+            # VN investor flow (Phase 2 — local only, graceful fallback)
+            _flow_data = {}
+            if _mkt == "VN":
+                try:
+                    from src.analytics.vn_investor_flow import get_vn_flow_intel
+                    _flow_data = get_vn_flow_intel(clean_sym, df_train)
+                except Exception as _fe:
+                    logger.debug(f"VN flow error: {_fe}")
+
+            # ── Volume Intelligence Dashboard ─────────────────────────────
+            if _vol_data:
+                sm_color = _vol_data.get("smart_money_color", "#94a3b8")
+                sm_signal = _vol_data.get("smart_money_signal", "N/A")
+                _render_html(f"""
+                <div style="background:rgba(15,23,42,0.8);border:1px solid rgba(99,102,241,0.3);
+                     border-radius:10px;padding:16px;margin-bottom:12px;">
+                  <div style="color:#7c3aed;font-size:0.7rem;letter-spacing:1px;margin-bottom:10px;">
+                    📊 VOLUME INTELLIGENCE
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">OBV Trend</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">{_vol_data.get('obv_trend','N/A')}</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">CMF(14)</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">
+                        {_vol_data.get('cmf_14',0):.3f} — {_vol_data.get('cmf_signal','N/A')}
+                      </div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">VWAP Deviation</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">
+                        {_vol_data.get('vwap_deviation',0):+.2f}% — {_vol_data.get('vwap_signal','N/A')}
+                      </div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">Block Trades</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">
+                        {_vol_data.get('block_ratio_pct',0):.0f}% — {_vol_data.get('block_direction','N/A')}
+                      </div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">Volume 5D vs Avg</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">
+                        {_vol_data.get('vol_ratio_5d_pct',100):.0f}% — {_vol_data.get('volume_delta_signal','N/A')}
+                      </div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;">
+                      <div style="color:#94a3b8;font-size:0.65rem;">Dòng tiền (Flow)</div>
+                      <div style="color:#e2e8f0;font-size:0.85rem;font-weight:600;">
+                        {_flow_data.get('net_flow', 'N/A (Cloud)')}
+                      </div>
+                    </div>
+                  </div>
+                  <div style="background:rgba(255,255,255,0.06);border-radius:8px;padding:10px;
+                       border-left:3px solid {sm_color};">
+                    <span style="color:{sm_color};font-weight:700;font-size:0.9rem;">{sm_signal}</span>
+                  </div>
+                </div>
+                """)
+
+            # ── Senate Button ─────────────────────────────────────────────
+            if st.button("⚖ Triệu tập Hội đồng 5 Thành viên", key="senate_btn"):
                 tech_data = {
-                    "price": live_price,
-                    "forecast_1d": predictions[1]['predicted_price'],
-                    "smc_trend": smc_state.get('trend', 'N/A'),
-                    "wyckoff_phase": wyckoff_state.get('phase', 'N/A'),
-                    "ml_confidence": int(predictions[1]['confidence'] * 100)
+                    "price":        live_price,
+                    "forecast_1d":  predictions[1]["predicted_price"],
+                    "smc_trend":    smc_state.get("trend", "N/A"),
+                    "wyckoff_phase": wyckoff_state.get("phase", "N/A"),
+                    "ml_confidence": int(predictions[1]["confidence"] * 100),
                 }
-                with st.spinner("The Experts are debating..."):
-                    debate_transcript = advisor.get_senate_debate(symbol, tech_data)
+                with st.spinner("5 chuyên gia đang tranh luận... (~15 giây)"):
+                    debate_transcript = advisor.get_senate_debate(
+                        symbol, tech_data,
+                        volume_data=_vol_data or None,
+                        flow_data=_flow_data or None,
+                    )
                     st.markdown(f"""
-                    <div style="background: rgba(26, 26, 46, 0.8); border: 1px solid rgba(102, 126, 234, 0.3); border-radius: 12px; padding: 25px; line-height: 1.6;">
+                    <div style="background:rgba(26,26,46,0.9);border:1px solid rgba(102,126,234,0.3);
+                         border-radius:12px;padding:25px;line-height:1.8;color:#e2e8f0;
+                         white-space:pre-wrap;">
                         {debate_transcript}
                     </div>
                     """, unsafe_allow_html=True)
             else:
-                st.info("Click để nghe Bull 🐂, Bear 🐻 và Quant 🤖 tranh luận về cổ phiếu này.")
+                st.info(
+                    "Bấm nút để nghe 🐂 Bull, 🐻 Bear, 🤖 Quant, "
+                    "💰 Smart Money và 📰 Macro tranh luận với dữ liệu định lượng."
+                )
 
         with tab_chart:
             st.markdown("### 📈 Price & Forecast Band")
