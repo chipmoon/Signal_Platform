@@ -2302,32 +2302,102 @@ def render():
     col_l, col_r = st.columns([2, 1], gap="medium")
     
     with col_l:
-        tab_chart, tab_vp, tab_ai, tab_mozy = st.tabs(["🚀 AI Forecast", "📊 Inst. Flow (VP)", "🧠 AI Senate Debate", "🇻🇳 Mozyfin Analysis"])
-        
-        # ── Mozyfin Analysis Tab ─────────────────────────────────────────
-        with tab_mozy:
-            st.markdown("### 🇻🇳 Mozyfin AI Analysis")
-            st.caption("Phân tích bởi Mozyfin AI — dữ liệu từ báo cáo thực tế, tin tức")
+        tab_chart, tab_vp, tab_ai = st.tabs(["🚀 AI Forecast", "📊 Inst. Flow (VP)", "🤖 AI Analysis"])
 
+        # ── AI Analysis Tab (Unified: Gemini/Mozyfin + Senate Debate) ──────
+        with tab_ai:
+            clean_sym = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "")
+            _mkt = "TW" if ".TW" in symbol or ".TWO" in symbol or (symbol.replace(".","").isdigit() and len(symbol) <= 6) else "VN"
+
+            # ── Section 1: AI Stock Analysis ──────────────────────────────
+            st.markdown("#### 🤖 Phân tích AI Chuyên sâu")
             mozy2 = _get_mozyfin_client()
-            if not mozy2:
-                st.warning("Mozyfin API key chưa cấu hình. Thêm MOZYFIN_API_KEY vào .streamlit/secrets.toml")
+            analyst, provider, usage = _get_best_ai_analyst(mozy2)
+
+            if provider == "mozyfin":
+                used = usage.get("credits_used", 0)
+                cap = usage.get("credits_cap", 50)
+                st.caption(
+                    f"🟢 **Mozyfin AI** | Credits còn: **{cap - used}/{cap}** "
+                    f"| Gemini tự động thay thế khi hết"
+                )
+            elif provider == "gemini":
+                st.caption(
+                    "🔵 **Gemini 2.5 Flash** (Google AI) — Miễn phí 1,500 req/ngày"
+                )
             else:
-                clean_sym = symbol.replace(".VN", "").replace(".TW", "")
+                st.warning("Chưa cấu hình AI. Cần MOZYFIN_API_KEY hoặc GOOGLE_API_KEY.")
+
+            if analyst:
+                ai_key = f"ai_analysis_{clean_sym}"
+                if ai_key not in st.session_state:
+                    st.session_state[ai_key] = ""
+                    st.session_state[f"{ai_key}_prov"] = ""
+
+                btn_label = (
+                    f"🔍 Phân tích {clean_sym} bằng Mozyfin AI"
+                    if provider == "mozyfin"
+                    else f"🤖 Phân tích {clean_sym} bằng Gemini 2.5 Flash"
+                )
+                spin_msg = (
+                    "Mozyfin AI đang phân tích... (~30-60 giây)"
+                    if provider == "mozyfin"
+                    else "Gemini 2.5 Flash đang phân tích... (~10 giây)"
+                )
+
+                if st.button(btn_label, key=f"ai_btn_{clean_sym}"):
+                    with st.spinner(spin_msg):
+                        try:
+                            if provider == "gemini":
+                                result = analyst.analyze_stock(clean_sym, market=_mkt)
+                            else:
+                                result = analyst.analyze_stock(clean_sym)
+                        except TypeError:
+                            result = analyst.analyze_stock(clean_sym)
+                        st.session_state[ai_key] = result
+                        st.session_state[f"{ai_key}_prov"] = provider
+                        st.rerun()
+
+                saved = st.session_state.get(ai_key, "")
+                saved_prov = st.session_state.get(f"{ai_key}_prov", provider)
+                if saved:
+                    prov_label = (
+                        "MOZYFIN AI ANALYST"
+                        if saved_prov == "mozyfin"
+                        else "GEMINI 2.5 FLASH — GOOGLE AI"
+                    )
+                    st.markdown("---")
+                    _render_html(
+                        '<div style="background:rgba(26,26,46,0.95);'
+                        'border:1px solid rgba(102,126,234,0.3);'
+                        'border-radius:12px;padding:20px;line-height:1.8;color:#e2e8f0;">'
+                        f'<div style="color:#90cdf4;font-size:0.75rem;'
+                        f'letter-spacing:1px;margin-bottom:12px;">'
+                        f'{prov_label} — {clean_sym}</div>'
+                        + saved.replace("\n", "<br>")
+                        + "</div>"
+                    )
+                else:
+                    st.info("Bấm nút để nhận phân tích AI chuyên sâu.")
+
+            # ── Section 2: Mozyfin Entity Info + News (VN only) ──────────
+            if mozy2 and _mkt == "VN":
                 entity_data = {}
                 news_data = []
                 try:
                     entity_data = mozy2.search_entity(clean_sym)
-                    news_data = mozy2.get_news(clean_sym, limit=5)
+                    news_data = mozy2.get_news(clean_sym, limit=4)
                 except Exception as _e:
-                    logger.debug(f"Mozyfin data: {_e}")
+                    logger.debug(f"Mozyfin entity/news: {_e}")
 
                 if entity_data:
+                    st.markdown("---")
+                    st.markdown("#### 🏢 Thông tin doanh nghiệp (Mozyfin)")
                     e1, e2, e3 = st.columns(3)
                     price = entity_data.get("current_price", 0)
                     mcap = entity_data.get("market_cap", 0)
                     e1.metric("Tên", entity_data.get("local_short_name") or entity_data.get("short_name", "-"))
-                    e2.metric("Giá hiện tại", f"{price:,.0f}" if price else "-")
+                    e2.metric("Giá", f"{price:,.0f}" if price else "-")
                     e3.metric("Vốn hóa", f"{mcap/1e12:.1f}T VND" if mcap else "-")
                     profile = entity_data.get("profile", "")
                     if profile:
@@ -2338,94 +2408,37 @@ def render():
                     st.markdown("#### 📰 Tin tức mới nhất")
                     for article in news_data:
                         title = article.get("title", "")
-                        content_snip = article.get("content", "")[:200]
+                        snip = article.get("content", "")[:200]
                         st.markdown(f"**{title}**")
-                        if content_snip:
-                            st.caption(content_snip + "...")
+                        if snip:
+                            st.caption(snip + "...")
                         st.divider()
 
-                # ── AI Analysis: Mozyfin → Gemini fallback ──────────────────
-                st.markdown("#### 🤖 Phân tích AI")
-                analyst, provider, usage = _get_best_ai_analyst(mozy2)
-
-                if provider == "mozyfin":
-                    used = usage.get("credits_used", 0)
-                    cap = usage.get("credits_cap", 50)
-                    st.caption(
-                        f"🟢 **Mozyfin AI** đang hoạt động | "
-                        f"Credits còn lại: **{cap - used}/{cap}** "
-                        f"| Gemini tự động thay thế khi hết"
-                    )
-                elif provider == "gemini":
-                    st.caption(
-                        "🔵 **Gemini 2.5 Flash** (Google AI) "
-                        "— Mozyfin hết credit | Miễn phí 1,500 req/ngày"
-                    )
-                else:
-                    st.warning(
-                        "Chưa cấu hình AI. Thêm MOZYFIN_API_KEY hoặc "
-                        "GOOGLE_API_KEY vào Streamlit Secrets."
-                    )
-
-                if analyst:
-                    ai_key = f"ai_analysis_{clean_sym}"
-                    if ai_key not in st.session_state:
-                        st.session_state[ai_key] = ""
-                        st.session_state[f"{ai_key}_prov"] = ""
-
-                    btn_label = (
-                        f"🔍 Phân tích {clean_sym} bằng Mozyfin AI"
-                        if provider == "mozyfin"
-                        else f"🤖 Phân tích {clean_sym} bằng Gemini 2.5 Flash (miễn phí)"
-                    )
-                    spin_msg = (
-                        "Mozyfin AI đang phân tích... (~30-60 giây)"
-                        if provider == "mozyfin"
-                        else "Gemini 2.5 Flash đang phân tích... (~10 giây)"
-                    )
-
-                    if st.button(btn_label, key=f"ai_btn_{clean_sym}"):
-                        with st.spinner(spin_msg):
-                            _mkt = "TW" if ".TW" in symbol or symbol.isdigit() else "VN"
-                            try:
-                                # GeminiClient accepts market=, MozyfinClient does not
-                                if provider == "gemini":
-                                    result = analyst.analyze_stock(clean_sym, market=_mkt)
-                                else:
-                                    result = analyst.analyze_stock(clean_sym)
-                            except TypeError:
-                                # Fallback: call without market param
-                                result = analyst.analyze_stock(clean_sym)
-                            st.session_state[ai_key] = result
-                            st.session_state[f"{ai_key}_prov"] = provider
-                            st.rerun()
-
-                    saved = st.session_state.get(ai_key, "")
-                    saved_prov = st.session_state.get(f"{ai_key}_prov", provider)
-                    if saved:
-                        prov_label = (
-                            "MOZYFIN AI ANALYST"
-                            if saved_prov == "mozyfin"
-                            else "GEMINI 2.5 FLASH — GOOGLE AI"
-                        )
-                        st.markdown("---")
-                        _render_html(
-                            '<div style="background:rgba(26,26,46,0.95);'
-                            'border:1px solid rgba(102,126,234,0.3);'
-                            'border-radius:12px;padding:20px;line-height:1.8;color:#e2e8f0;">'
-                            f'<div style="color:#90cdf4;font-size:0.75rem;'
-                            f'letter-spacing:1px;margin-bottom:12px;">'
-                            f'{prov_label} — {clean_sym}</div>'
-                            + saved.replace("\n", "<br>")
-                            + "</div>"
-                        )
-                    else:
-                        st.info("Bấm nút để nhận phân tích AI chuyên sâu.")
+            # ── Section 3: Senate Debate (uses existing ML data) ──────────
+            st.markdown("---")
+            st.markdown("#### ⚖️ AI Senate Debate")
+            st.caption("Hội đồng AI Bull-Bear-Quant tranh luận về cổ phiếu này.")
+            if st.button("⚖ Summon the Senate (AI Analysis)", key="senate_btn"):
+                tech_data = {
+                    "price": live_price,
+                    "forecast_1d": predictions[1]['predicted_price'],
+                    "smc_trend": smc_state.get('trend', 'N/A'),
+                    "wyckoff_phase": wyckoff_state.get('phase', 'N/A'),
+                    "ml_confidence": int(predictions[1]['confidence'] * 100)
+                }
+                with st.spinner("The Experts are debating..."):
+                    debate_transcript = advisor.get_senate_debate(symbol, tech_data)
+                    st.markdown(f"""
+                    <div style="background: rgba(26, 26, 46, 0.8); border: 1px solid rgba(102, 126, 234, 0.3); border-radius: 12px; padding: 25px; line-height: 1.6;">
+                        {debate_transcript}
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Click để nghe Bull 🐂, Bear 🐻 và Quant 🤖 tranh luận về cổ phiếu này.")
 
         with tab_chart:
             st.markdown("### 📈 Price & Forecast Band")
-            
-            # ➔ OPTION C: Interactive Controls (MA, Fibonacci, Clean)
+
             chart_ctrls = st.columns([1, 1, 1])
             with chart_ctrls[0]:
                 show_ma = st.checkbox("MA (50/200)", value=False, key="chart_ma")
@@ -2433,7 +2446,7 @@ def render():
                 show_fibo = st.checkbox("Fibonacci", value=False, key="chart_fibo")
             with chart_ctrls[2]:
                 st.markdown('<div style="text-align:right; color:#94a3b8; font-size:0.75rem; padding-top:10px;">PRO VIEW</div>', unsafe_allow_html=True)
-                
+
             fig = go.Figure()
             
             # Base Price Line
@@ -2511,28 +2524,7 @@ def render():
             st.markdown("###  Volume Profile Analysis")
             _render_volume_profile(df_train)
 
-        with tab_ai:
-            st.markdown("###  The AI Senate Debate")
-            st.caption("A committee of AI specialists debating this setup in real-time.")
-            
-            if st.button("⚖ Summon the Senate (AI Analysis)"):
-                tech_data = {
-                    "price": live_price,
-                    "forecast_1d": predictions[1]['predicted_price'],
-                    "smc_trend": smc_state.get('trend', 'N/A'),
-                    "wyckoff_phase": wyckoff_state.get('phase', 'N/A'),
-                    "ml_confidence": int(predictions[1]['confidence'] * 100)
-                }
-                with st.spinner("The Experts are debating..."):
-                    debate_transcript = advisor.get_senate_debate(symbol, tech_data)
-                    st.markdown(f"""
-                    <div style="background: rgba(26, 26, 46, 0.8); border: 1px solid rgba(102, 126, 234, 0.3); border-radius: 12px; padding: 25px; line-height: 1.6;">
-                        {debate_transcript}
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("Click the button to hear the Bull, Bear, and Quant debate this asset.")
-        
+
         # NEW: Trade Plan Dashboard (SYNCED with Intel)
         _render_trade_plan_panel(df_train, smc_state, predictions, scalp_intel)
 
