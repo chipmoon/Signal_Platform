@@ -308,42 +308,50 @@ class TaiwanStockProvider(AssetProvider):
         end: str,
         interval: str = "1d",
     ) -> pd.DataFrame:
-        """Fetch Taiwan stock price data from Yahoo Finance."""
+        """Fetch Taiwan stock price data — cache-first, yfinance fallback."""
         if not symbol.endswith('.TW') and not symbol.endswith('.TWO'):
             yahoo_symbol = f"{symbol}.TW"
         else:
             yahoo_symbol = symbol
-        
+
+        clean_code = yahoo_symbol.replace('.TW', '').replace('.TWO', '')
+
+        # ── 1. Try local OHLCV cache first (populated by nightly scan) ──
+        try:
+            cache_dir = Path(__file__).resolve().parents[2] / ".cache" / "ohlcv"
+            for fname in [f"{yahoo_symbol}.parquet", f"{clean_code}.TW.parquet",
+                          f"{yahoo_symbol}.csv", f"{clean_code}.TW.csv"]:
+                cache_path = cache_dir / fname
+                if cache_path.exists():
+                    if fname.endswith('.parquet'):
+                        df_c = pd.read_parquet(cache_path)
+                    else:
+                        df_c = pd.read_csv(cache_path)
+                    if not df_c.empty:
+                        logger.info(f"TW cache hit: {yahoo_symbol} ({len(df_c)} rows)")
+                        # Filter by date range
+                        if "Date" in df_c.columns:
+                            df_c["Date"] = pd.to_datetime(df_c["Date"])
+                            df_c = df_c[
+                                (df_c["Date"] >= pd.to_datetime(start)) &
+                                (df_c["Date"] <= pd.to_datetime(end))
+                            ]
+                        required = ["Date", "Open", "High", "Low", "Close", "Volume"]
+                        if all(c in df_c.columns for c in required):
+                            return df_c[required]
+        except Exception as _ce:
+            logger.debug(f"TW cache lookup failed: {_ce}")
+
+        # ── 2. yfinance (works locally, may be blocked on Streamlit Cloud) ──
         try:
             yf_interval = interval
             if interval == "4h":
-                yf_interval = "90m" 
-                
-            logger.info(f"Fetching {yahoo_symbol} ({interval}) data from {start} to {end}")
-            
+                yf_interval = "90m"
+
+            logger.info(f"Fetching {yahoo_symbol} ({interval}) from yfinance {start}→{end}")
             with _safe_yfinance_env():
                 ticker = yf.Ticker(yahoo_symbol)
                 df = ticker.history(start=start, end=end, interval=yf_interval, auto_adjust=True)
-            
-            if df.empty:
-                raise ValueError(f"No data available for {yahoo_symbol}")
-            
-            df = df.reset_index()
-            if "Date" not in df.columns and "Datetime" in df.columns:
-                df = df.rename(columns={"Datetime": "Date"})
-            elif "Date" not in df.columns and "index" in df.columns:
-                df = df.rename(columns={"index": "Date"})
-            
-            required = ["Date", "Open", "High", "Low", "Close", "Volume"]
-            missing = [col for col in required if col not in df.columns]
-            if missing:
-                raise ValueError(f"Missing columns: {missing}")
-            
-            logger.success(f"Fetched {len(df)} rows for {yahoo_symbol}")
-            return df[required]
-        except Exception as e:
-            logger.error(f"Failed to fetch {yahoo_symbol}: {e}")
-            raise ValueError(f"Could not fetch data for {yahoo_symbol}: {e}")
     
     def get_fundamentals(self, symbol: str) -> Dict[str, float]:
         """Get fundamental data for Taiwan stock from Yahoo Finance."""
