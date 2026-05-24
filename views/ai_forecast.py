@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Forecast Page
 ================
 Real stock price prediction using the trading system's AI engine.
@@ -41,6 +41,13 @@ try:
 except ImportError:
     _MOZYFIN_AVAILABLE = False
 
+# Gemini 2.5 Flash fallback (Google AI Studio - free 1,500 req/day)
+try:
+    from src.gemini_client import GeminiClient as _GeminiClient
+    _GEMINI_AVAILABLE = True
+except ImportError:
+    _GEMINI_AVAILABLE = False
+
 
 def _get_mozyfin_client():
     """Get Mozyfin client, returns None if API key not configured."""
@@ -50,6 +57,38 @@ def _get_mozyfin_client():
         return _MozyfinClient()
     except Exception:
         return None
+
+
+def _get_gemini_client():
+    """Get Gemini 2.5 Flash client, returns None if API key not configured."""
+    if not _GEMINI_AVAILABLE:
+        return None
+    try:
+        return _GeminiClient()
+    except Exception:
+        return None
+
+
+def _get_best_ai_analyst(mozy_client=None):
+    """
+    Smart AI analyst selector with automatic fallback:
+      1. Mozyfin AI  — if configured + credits remaining
+      2. Gemini 2.5 Flash (Google) — free fallback, 1,500 req/day
+    Returns: (client, provider 'mozyfin'|'gemini'|'none', usage_dict)
+    """
+    if mozy_client:
+        try:
+            usage = mozy_client.get_usage()
+            if usage.get("credits_used", 0) < usage.get("credits_cap", 50):
+                return mozy_client, "mozyfin", usage
+        except Exception:
+            pass
+
+    gemini = _get_gemini_client()
+    if gemini:
+        return gemini, "gemini", {}
+
+    return None, "none", {}
 
 
 # ── Internal Helper Functions ──────────────────────────────────
@@ -2305,31 +2344,74 @@ def render():
                             st.caption(content_snip + "...")
                         st.divider()
 
-                st.markdown("#### 🤖 Phân tích AI Mozyfin")
-                usage = mozy2.get_usage()
-                credits_used = usage.get("credits_used", 0)
-                credits_cap = usage.get("credits_cap", 50)
-                st.caption(f"Credits đã dùng: {credits_used}/{credits_cap} (1 credit/lần)")
-                mozy_key = f"mozyfin_analysis_{clean_sym}"
-                if mozy_key not in st.session_state:
-                    st.session_state[mozy_key] = ""
-                if st.button(
-                    f"🔍 Phân tích {clean_sym} bằng Mozyfin AI",
-                    key=f"mozy_btn_{clean_sym}",
-                    disabled=(credits_used >= credits_cap),
-                ):
-                    with st.spinner("Mozyfin AI đang phân tích... (~30-60 giây)"):
-                        result = mozy2.analyze_stock(clean_sym)
-                        st.session_state[mozy_key] = result
-                        st.rerun()
-                if st.session_state.get(mozy_key):
-                    analysis_text = st.session_state[mozy_key]
-                    st.markdown("---")
-                    st.markdown(analysis_text)
-                elif credits_used >= credits_cap:
-                    st.warning("Đã hết credits tháng này.")
+                # ── AI Analysis: Mozyfin → Gemini fallback ──────────────────
+                st.markdown("#### 🤖 Phân tích AI")
+                analyst, provider, usage = _get_best_ai_analyst(mozy2)
+
+                if provider == "mozyfin":
+                    used = usage.get("credits_used", 0)
+                    cap = usage.get("credits_cap", 50)
+                    st.caption(
+                        f"🟢 **Mozyfin AI** đang hoạt động | "
+                        f"Credits còn lại: **{cap - used}/{cap}** "
+                        f"| Gemini tự động thay thế khi hết"
+                    )
+                elif provider == "gemini":
+                    st.caption(
+                        "🔵 **Gemini 2.5 Flash** (Google AI) "
+                        "— Mozyfin hết credit | Miễn phí 1,500 req/ngày"
+                    )
                 else:
-                    st.info("Bấm nút để nhận phân tích AI từ dữ liệu báo cáo thực tế.")
+                    st.warning(
+                        "Chưa cấu hình AI. Thêm MOZYFIN_API_KEY hoặc "
+                        "GOOGLE_API_KEY vào Streamlit Secrets."
+                    )
+
+                if analyst:
+                    ai_key = f"ai_analysis_{clean_sym}"
+                    if ai_key not in st.session_state:
+                        st.session_state[ai_key] = ""
+                        st.session_state[f"{ai_key}_prov"] = ""
+
+                    btn_label = (
+                        f"🔍 Phân tích {clean_sym} bằng Mozyfin AI"
+                        if provider == "mozyfin"
+                        else f"🤖 Phân tích {clean_sym} bằng Gemini 2.5 Flash (miễn phí)"
+                    )
+                    spin_msg = (
+                        "Mozyfin AI đang phân tích... (~30-60 giây)"
+                        if provider == "mozyfin"
+                        else "Gemini 2.5 Flash đang phân tích... (~10 giây)"
+                    )
+
+                    if st.button(btn_label, key=f"ai_btn_{clean_sym}"):
+                        with st.spinner(spin_msg):
+                            result = analyst.analyze_stock(clean_sym)
+                            st.session_state[ai_key] = result
+                            st.session_state[f"{ai_key}_prov"] = provider
+                            st.rerun()
+
+                    saved = st.session_state.get(ai_key, "")
+                    saved_prov = st.session_state.get(f"{ai_key}_prov", provider)
+                    if saved:
+                        prov_label = (
+                            "MOZYFIN AI ANALYST"
+                            if saved_prov == "mozyfin"
+                            else "GEMINI 2.5 FLASH — GOOGLE AI"
+                        )
+                        st.markdown("---")
+                        _render_html(
+                            '<div style="background:rgba(26,26,46,0.95);'
+                            'border:1px solid rgba(102,126,234,0.3);'
+                            'border-radius:12px;padding:20px;line-height:1.8;color:#e2e8f0;">'
+                            f'<div style="color:#90cdf4;font-size:0.75rem;'
+                            f'letter-spacing:1px;margin-bottom:12px;">'
+                            f'{prov_label} — {clean_sym}</div>'
+                            + saved.replace("\n", "<br>")
+                            + "</div>"
+                        )
+                    else:
+                        st.info("Bấm nút để nhận phân tích AI chuyên sâu.")
 
         with tab_chart:
             st.markdown("### 📈 Price & Forecast Band")
