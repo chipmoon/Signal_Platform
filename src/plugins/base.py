@@ -313,32 +313,36 @@ class ProviderRegistry:
                 # Deduplication: If we have a market hit (VN/TW), ignore the generic US fallback
                 if provider.market_id == "US" and base in seen_base_symbols:
                     continue
-                    
+                # Also skip US if priority markets already found something
+                if provider.market_id == "US" and priority_has_exact_match:
+                    continue
+
                 results.append(info)
                 seen_symbols.add(info.symbol)
                 seen_base_symbols.add(base)
-                
+
                 # Mark if a priority market found an exact match
                 if provider.market_id != "US":
                     priority_has_exact_match = True
 
-        # 2. General search — skip US if priority markets already have exact matches
+        # 2. General search — skip US if priority markets already have any results
+        priority_has_results = any(r.market != "US" for r in results)
         for provider in ordered_providers:
-            # If priority markets found the exact ticker, don't let US pollute with fuzzy matches
-            if provider.market_id == "US" and priority_has_exact_match:
+            # If priority markets (TW/VN/COMMODITY) found anything, don't let US add noise
+            if provider.market_id == "US" and priority_has_results:
                 continue
-                
+
             hits = provider.search_assets(query, limit=limit)
             for hit in hits:
                 if hit.symbol not in seen_symbols:
                     base = hit.symbol.split('.')[0].upper()
                     if provider.market_id == "US" and base in seen_base_symbols:
                         continue
-                        
+
                     results.append(hit)
                     seen_symbols.add(hit.symbol)
                     seen_base_symbols.add(base)
-        
+
         return results[:limit]
 
 

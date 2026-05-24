@@ -147,6 +147,10 @@ US_BLACKLIST = {
     "PHR", "SBT", "HSG", "NKG", "TLG", "GMD", "VTP", "VOS", "PPC",
     "HDB", "LPB", "VIB", "TPB", "SHB", "EIB", "OCB", "MSB", "KLB",
     "VND", "HCM", "VCI", "SHS", "AGR", "BSC", "CTS", "FTS", "TVS",
+    # TW company names (not symbols) that yfinance accepts as phantom tickers
+    "MEDIATEK", "TSMC", "FOXCONN", "QUANTA", "WISTRON", "COMPAL",
+    "ASUSTEK", "ACER", "REALTEK", "NOVATEK", "UNIMICRON", "DELTA",
+    "FUBON", "CATHAY", "CHUNGHWA", "EVERGREEN", "YANGMING",
 }
 
 
@@ -257,10 +261,14 @@ class USStockProvider(AssetProvider):
             return None
 
         # Try with Yahoo Finance lookup for remaining unknown symbols
-        # (e.g., BTC-USD, BRK-B, ^GSPC — these have special chars)
+        # Require a real price to confirm it's a valid US stock (not a phantom/404)
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
+            # Validate: must have a real price, not just a partial 404 response
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
+            if not price or float(price) <= 0:
+                return None
             name = info.get("shortName") or info.get("longName") or symbol
             sector = info.get("sector") or "Unknown"
             return AssetInfo(
