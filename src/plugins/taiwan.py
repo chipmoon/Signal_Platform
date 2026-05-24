@@ -316,7 +316,7 @@ class TaiwanStockProvider(AssetProvider):
 
         clean_code = yahoo_symbol.replace('.TW', '').replace('.TWO', '')
 
-        # ── 1. Try local OHLCV cache first (populated by nightly scan) ──
+        # 1. Try local OHLCV cache first (populated by nightly scan)
         try:
             cache_dir = Path(__file__).resolve().parents[2] / ".cache" / "ohlcv"
             for fname in [f"{yahoo_symbol}.parquet", f"{clean_code}.TW.parquet",
@@ -329,7 +329,6 @@ class TaiwanStockProvider(AssetProvider):
                         df_c = pd.read_csv(cache_path)
                     if not df_c.empty:
                         logger.info(f"TW cache hit: {yahoo_symbol} ({len(df_c)} rows)")
-                        # Filter by date range
                         if "Date" in df_c.columns:
                             df_c["Date"] = pd.to_datetime(df_c["Date"])
                             df_c = df_c[
@@ -342,16 +341,38 @@ class TaiwanStockProvider(AssetProvider):
         except Exception as _ce:
             logger.debug(f"TW cache lookup failed: {_ce}")
 
-        # ── 2. yfinance (works locally, may be blocked on Streamlit Cloud) ──
+        # 2. yfinance (works locally, may be blocked on Streamlit Cloud)
         try:
             yf_interval = interval
             if interval == "4h":
                 yf_interval = "90m"
 
-            logger.info(f"Fetching {yahoo_symbol} ({interval}) from yfinance {start}→{end}")
+            logger.info(f"Fetching {yahoo_symbol} ({interval}) from yfinance {start} to {end}")
             with _safe_yfinance_env():
                 ticker = yf.Ticker(yahoo_symbol)
                 df = ticker.history(start=start, end=end, interval=yf_interval, auto_adjust=True)
+
+            if df.empty:
+                raise ValueError(f"yfinance returned empty data for {yahoo_symbol}")
+
+            df = df.reset_index()
+            if "Date" not in df.columns and "Datetime" in df.columns:
+                df = df.rename(columns={"Datetime": "Date"})
+            elif "Date" not in df.columns and "index" in df.columns:
+                df = df.rename(columns={"index": "Date"})
+
+            required = ["Date", "Open", "High", "Low", "Close", "Volume"]
+            missing = [col for col in required if col not in df.columns]
+            if missing:
+                raise ValueError(f"Missing columns: {missing}")
+
+            logger.success(f"Fetched {len(df)} rows for {yahoo_symbol}")
+            return df[required]
+
+        except Exception as e:
+            logger.error(f"TW yfinance failed for {yahoo_symbol}: {e}")
+            # Return empty instead of raising — caller shows friendly 'No data' message
+            return pd.DataFrame()
     
     def get_fundamentals(self, symbol: str) -> Dict[str, float]:
         """Get fundamental data for Taiwan stock from Yahoo Finance."""
