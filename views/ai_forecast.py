@@ -33,6 +33,22 @@ from src.strategies.quant_money_flow import QuantMoneyFlowAnalyzer
 from src.strategies.live_geo_osint import LiveGeoOsintEngine
 from src.risk_manager import calculate_var
 from src.llm_advisor import advisor
+# ── Phase 1-4: Advanced Analysis Modules ──────────────────────────────────────
+try:
+    from src.analytics.mtf_confluence import compute_mtf_confluence
+    _MTF_AVAILABLE = True
+except ImportError:
+    _MTF_AVAILABLE = False
+try:
+    from src.strategies.elliott_wave import ElliottWaveAnalyzer
+    _EW_AVAILABLE = True
+except ImportError:
+    _EW_AVAILABLE = False
+try:
+    from src.analytics.fundamental_score import get_fundamental_dict
+    _FUND_AVAILABLE = True
+except ImportError:
+    _FUND_AVAILABLE = False
 
 # Mozyfin integration (optional - graceful fallback if key missing)
 try:
@@ -2161,6 +2177,39 @@ def render():
     smc_state = smc_core.get_current_state(df_train)
     qmf_df = QuantMoneyFlowAnalyzer().generate_signals(df_train)
     qmf_last = qmf_df.iloc[-1] if not qmf_df.empty else {}
+
+    # ── Phase 1: Multi-Timeframe Confluence ──────────────────────────────────
+    mtf_state = {}
+    if _MTF_AVAILABLE:
+        try:
+            mtf_state = compute_mtf_confluence(symbol, market, df_daily=df_train)
+        except Exception as _e:
+            logger.debug(f"MTF confluence failed: {_e}")
+
+    # ── Phase 2: Elliott Wave (Weekly strategic context) ─────────────────────
+    ew_state = {}
+    if _EW_AVAILABLE:
+        try:
+            import yfinance as _yf
+            _yf_sym = f"{symbol}.VN" if market == "VN" else symbol
+            _df_wk = _yf.Ticker(_yf_sym).history(period="2y", interval="1wk", auto_adjust=True)
+            if not _df_wk.empty:
+                _df_wk = _df_wk.reset_index()
+                _df_wk.columns = [str(c) for c in _df_wk.columns]
+                ew_state = ElliottWaveAnalyzer().get_current_state(_df_wk)
+        except Exception as _e:
+            logger.debug(f"Elliott Wave failed: {_e}")
+
+    # ── Phase 3: Fundamental Quality Score ──────────────────────────────────
+    fund_state = {}
+    if _FUND_AVAILABLE:
+        try:
+            _fund_key = f"fund_{symbol}"
+            if _fund_key not in st.session_state:
+                st.session_state[_fund_key] = get_fundamental_dict(symbol, market)
+            fund_state = st.session_state[_fund_key]
+        except Exception as _e:
+            logger.debug(f"Fundamental score failed: {_e}")
     qmf_state = {
         "score": float(qmf_last.get("qmf_score", 0.0)),
         "signal": int(qmf_last.get("qmf_signal", 0)),
@@ -2723,6 +2772,15 @@ def render():
         # UPGRADED: Smart Entry Scanner (replaces Liquidity Black Holes + Entry Table)
         _render_smart_entry_scanner(df_train, smc_state, wyckoff_state)
 
+        # ── Phase 1: Multi-Timeframe Confluence Panel ────────────────────────
+        _render_mtf_panel(mtf_state)
+
+        # ── Phase 2: Elliott Wave Strategic Context Panel ────────────────────
+        _render_elliott_wave_panel(ew_state)
+
+        # ── Phase 3+4: Fundamental Score + Composite Signal Matrix ──────────
+        _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state, fund_state)
+
         # INTEGRATION: Hybrid Portfolio (Moved down)
         _render_hybrid_portfolio(symbol, live_price, predictions, wyckoff_state)
 
@@ -2777,3 +2835,172 @@ def render():
     """)
 
 
+
+# ═════════════════════════════════════════════════════
+# Phase 1-4: Rendering Functions
+# ═════════════════════════════════════════════════════
+
+def _render_mtf_panel(mtf_state: dict) -> None:
+    if not mtf_state:
+        return
+    label = mtf_state.get("confluence_label", "Unknown")
+    agreement = mtf_state.get("agreement", "")
+    bg_color = ("rgba(34,197,94,0.08)" if "Bullish" in label
+                else "rgba(239,68,68,0.08)" if "Bearish" in label
+                else "rgba(148,163,184,0.08)")
+    border_color = ("#22c55e" if "Bullish" in label
+                   else "#ef4444" if "Bearish" in label else "#64748b")
+    with st.expander(f"📡 Multi-Timeframe Confluence — {label}", expanded=True):
+        st.markdown(
+            f'<div style="background:{bg_color};border-left:3px solid {border_color};padding:12px;border-radius:6px;margin-bottom:8px;">'
+            f'<div style="font-size:1.1rem;font-weight:700;color:{border_color};">{label}</div>'
+            f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:4px;">{agreement}</div></div>',
+            unsafe_allow_html=True)
+        cols = st.columns(3)
+        for col, (name, key) in zip(cols, [("Weekly","weekly"),("Daily","daily"),("4H","4h")]):
+            tf = mtf_state.get(key, {})
+            bias = tf.get("bias", "Unknown")
+            icon = "🟢" if "Bullish" in bias else ("🔴" if "Bearish" in bias else "⚪")
+            col.metric(label=f"{icon} {name}", value=bias,
+                       help=f"Structure: {tf.get('structure','?')} | Wyckoff: {tf.get('wyckoff_phase','?')}")
+
+
+def _render_elliott_wave_panel(ew_state: dict) -> None:
+    if not ew_state:
+        return
+    wave = ew_state.get("current_wave", "?")
+    bias = ew_state.get("bias", "Neutral")
+    pattern = ew_state.get("pattern", "Unknown")
+    target = ew_state.get("target_price", 0)
+    target_label = ew_state.get("target_label", "")
+    invalidation = ew_state.get("invalidation", 0)
+    confidence = ew_state.get("confidence", 0)
+    notes = ew_state.get("notes", "")
+    violations = ew_state.get("rules_violated", [])
+    icon = "🟢" if "Bullish" in bias else ("🔴" if "Bearish" in bias else "⚪")
+    conf_color = "#22c55e" if confidence >= 60 else ("#f59e0b" if confidence >= 40 else "#ef4444")
+    with st.expander(f"🌊 Elliott Wave — Wave {wave} ({pattern})", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(
+                f'<div style="background:rgba(102,126,234,0.08);border-left:3px solid #667eea;padding:12px;border-radius:6px;">'
+                f'<div style="font-size:0.75rem;color:#94a3b8;">Current Wave (Weekly)</div>'
+                f'<div style="font-size:2rem;font-weight:900;color:#667eea;">{icon} Wave {wave}</div>'
+                f'<div style="font-size:0.85rem;color:#e2e8f0;">{pattern}</div>'
+                f'<div style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">{notes}</div></div>',
+                unsafe_allow_html=True)
+        with c2:
+            if target > 0:
+                inv_html = (f'<div style="font-size:0.7rem;color:#ef4444;margin-top:6px;">Invalidation: {invalidation:,.2f}</div>'
+                            if invalidation > 0 else '')
+                st.markdown(
+                    f'<div style="background:rgba(34,197,94,0.08);border-left:3px solid #22c55e;padding:12px;border-radius:6px;">'
+                    f'<div style="font-size:0.75rem;color:#94a3b8;">Fibonacci Target</div>'
+                    f'<div style="font-size:1.3rem;font-weight:700;color:#22c55e;">{target:,.2f}</div>'
+                    f'<div style="font-size:0.7rem;color:#94a3b8;">{target_label}</div>'
+                    + inv_html + f'</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:0.75rem;color:{conf_color};margin-top:8px;">Confidence: {confidence}% | Strategic context only</div>',
+                    unsafe_allow_html=True)
+        for v in violations:
+            st.warning(f"⚠️ {v}")
+
+
+def _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state, fund_state):
+    with st.expander("📊 Composite Signal Score Matrix", expanded=True):
+        if fund_state:
+            fs_score = fund_state.get("total_score", 0)
+            fs_grade = fund_state.get("grade", "N/A")
+            fs_label = fund_state.get("label", "")
+            coverage = fund_state.get("data_coverage", 0)
+            scores_detail = fund_state.get("scores", {})
+            gc = "#22c55e" if fs_score >= 70 else ("#f59e0b" if fs_score >= 50 else "#ef4444")
+            st.markdown("#### 🏦 Fundamental Quality Score")
+            fc1, fc2 = st.columns([1, 2])
+            with fc1:
+                st.markdown(
+                    f'<div style="text-align:center;background:rgba(0,0,0,0.3);border:2px solid {gc};border-radius:12px;padding:16px;">'
+                    f'<div style="font-size:3rem;font-weight:900;color:{gc};">{fs_grade}</div>'
+                    f'<div style="font-size:1.5rem;font-weight:700;color:{gc};">{fs_score}/100</div>'
+                    f'<div style="font-size:0.75rem;color:#94a3b8;">{fs_label}</div>'
+                    f'<div style="font-size:0.65rem;color:#475569;">Data: {coverage}% coverage</div></div>',
+                    unsafe_allow_html=True)
+            with fc2:
+                for metric, data in scores_detail.items():
+                    pts = data.get("pts", 0); maxp = data.get("max", 1); raw = data.get("raw", "N/A")
+                    pct = pts / maxp if maxp > 0 else 0
+                    bc = "#22c55e" if pct >= 0.7 else ("#f59e0b" if pct >= 0.4 else "#ef4444")
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+                        f'<div style="width:90px;font-size:0.7rem;color:#94a3b8;">{metric}</div>'
+                        f'<div style="flex:1;background:rgba(255,255,255,0.05);border-radius:3px;height:8px;">'
+                        f'<div style="width:{pct*100:.0f}%;background:{bc};height:8px;border-radius:3px;"></div></div>'
+                        f'<div style="width:60px;font-size:0.7rem;color:#e2e8f0;text-align:right;">{raw}</div>'
+                        f'<div style="width:40px;font-size:0.7rem;color:{bc};text-align:right;">{pts}/{maxp}</div></div>',
+                        unsafe_allow_html=True)
+            for cav in fund_state.get("caveats", [])[:2]:
+                st.caption(f"⚠️ {cav}")
+            st.markdown("---")
+
+        st.markdown("#### 🎯 Composite Signal Score")
+        factors = []
+        smc_sig = smc_state.get("signal", 0)
+        smc_raw = float(smc_state.get("smc_score", 0.0))
+        smc_pts = min(10, max(0, int((smc_raw + 1) * 5))) if smc_sig != 0 else 5
+        factors.append({"factor": "SMC Structure", "weight": 20, "score": smc_pts, "max": 10,
+                        "signal": "🟢 BUY" if smc_sig==1 else ("🔴 SELL" if smc_sig==-1 else "⚪ NEUTRAL")})
+        wy_bias = str(wyckoff_state.get("bias", "Neutral"))
+        wy_pts = 8 if any(x in wy_bias for x in ["Bullish","Markup"]) else (2 if any(x in wy_bias for x in ["Bearish","Markdown"]) else 5)
+        factors.append({"factor": "Wyckoff Phase", "weight": 15, "score": wy_pts, "max": 10,
+                        "signal": wyckoff_state.get("phase", "?")})
+        if mtf_state:
+            mtf_raw = mtf_state.get("confluence_score", 0)
+            mtf_pts = min(10, max(0, int((mtf_raw + 9) / 18 * 10)))
+            factors.append({"factor": "MTF Confluence", "weight": 20, "score": mtf_pts, "max": 10,
+                            "signal": mtf_state.get("confluence_label", "?")})
+        if ew_state:
+            ew_conf = ew_state.get("confidence", 0)
+            ew_bias_s = ew_state.get("bias", "Neutral")
+            ew_pts = int(ew_conf/10) if "Bullish" in ew_bias_s else (10-int(ew_conf/10) if "Bearish" in ew_bias_s else 5)
+            factors.append({"factor": "Elliott Wave", "weight": 15, "score": min(10,max(0,ew_pts)), "max": 10,
+                            "signal": f"Wave {ew_state.get('current_wave','?')} ({ew_bias_s})"})
+        if fund_state:
+            factors.append({"factor": "Fundamental", "weight": 15,
+                            "score": int(fund_state.get("total_score", 50)/10), "max": 10,
+                            "signal": f"Grade {fund_state.get('grade','N/A')}"})
+        factors.append({"factor": "Volume/Smart Money", "weight": 10,
+                        "score": min(10,max(0,int((float(smc_state.get("smc_score",0))*0.5+0.5)*10))),
+                        "max": 10, "signal": "OBV/CMF/VWAP"})
+        total_w = sum(f["weight"] for f in factors)
+        composite = sum(f["score"]/f["max"]*f["weight"] for f in factors)/total_w*100 if total_w else 50
+        if composite >= 70:   cl, cc = "STRONG BUY", "#22c55e"
+        elif composite >= 55: cl, cc = "BUY", "#86efac"
+        elif composite <= 30: cl, cc = "STRONG SELL", "#ef4444"
+        elif composite <= 45: cl, cc = "SELL", "#fca5a5"
+        else:                 cl, cc = "NEUTRAL", "#94a3b8"
+        n_high = sum(1 for f in factors if f["score"]/f["max"] >= 0.7)
+        conviction = "HIGH" if n_high >= len(factors)*0.6 else ("MEDIUM" if n_high >= len(factors)*0.4 else "LOW")
+        st.markdown(
+            f'<div style="background:rgba(0,0,0,0.4);border:2px solid {cc};border-radius:12px;padding:16px;margin-bottom:16px;text-align:center;">'
+            f'<div style="font-size:0.75rem;color:#94a3b8;">COMPOSITE SIGNAL</div>'
+            f'<div style="font-size:2.5rem;font-weight:900;color:{cc};">{cl}</div>'
+            f'<div style="font-size:1.2rem;font-weight:700;color:{cc};">{composite:.0f}/100</div>'
+            f'<div style="font-size:0.75rem;color:#64748b;margin-top:4px;">Conviction: {conviction}</div></div>',
+            unsafe_allow_html=True)
+        for f in factors:
+            pct = f["score"] / f["max"]
+            bc = "#22c55e" if pct >= 0.7 else ("#f59e0b" if pct >= 0.4 else "#ef4444")
+            st.markdown(
+                f'<div style="display:grid;grid-template-columns:130px 50px 1fr 80px;gap:4px;'
+                f'padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;">'
+                f'<span style="font-size:0.7rem;color:#e2e8f0;">{f["factor"]}</span>'
+                f'<span style="font-size:0.7rem;color:#64748b;">{f["weight"]}%</span>'
+                f'<span style="font-size:0.65rem;color:#94a3b8;">{f["signal"]}</span>'
+                f'<div style="display:flex;align-items:center;gap:3px;">'
+                f'<div style="flex:1;background:rgba(255,255,255,0.05);border-radius:2px;height:6px;">'
+                f'<div style="width:{int(pct*100)}%;background:{bc};height:6px;border-radius:2px;"></div></div>'
+                f'<span style="font-size:0.65rem;color:{bc};width:24px;">{f["score"]}/{f["max"]}</span>'
+                f'</div></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.6rem;color:#475569;margin-top:8px;text-align:right;">'
+            'SMC 20% · MTF 20% · Wyckoff 15% · Elliott 15% · Fundamental 15% · Volume 10%</div>',
+            unsafe_allow_html=True)
