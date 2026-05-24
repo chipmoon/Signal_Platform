@@ -1,4 +1,4 @@
-"""
+﻿"""
 AI Forecast Page
 ================
 Real stock price prediction using the trading system's AI engine.
@@ -33,6 +33,23 @@ from src.strategies.quant_money_flow import QuantMoneyFlowAnalyzer
 from src.strategies.live_geo_osint import LiveGeoOsintEngine
 from src.risk_manager import calculate_var
 from src.llm_advisor import advisor
+
+# Mozyfin integration (optional - graceful fallback if key missing)
+try:
+    from src.mozyfin_client import MozyfinClient as _MozyfinClient
+    _MOZYFIN_AVAILABLE = True
+except ImportError:
+    _MOZYFIN_AVAILABLE = False
+
+
+def _get_mozyfin_client():
+    """Get Mozyfin client, returns None if API key not configured."""
+    if not _MOZYFIN_AVAILABLE:
+        return None
+    try:
+        return _MozyfinClient()
+    except Exception:
+        return None
 
 
 # ── Internal Helper Functions ──────────────────────────────────
@@ -2220,12 +2237,100 @@ def render():
         else:
             st.caption(f"{msg} | status=FRESH")
 
-    # ── Render UI Panes ──
+    # -- Mozyfin Market Indices Banner --
+    mozy = _get_mozyfin_client()
+    if mozy:
+        try:
+            indices = mozy.get_market_indices()
+            vn_indices = [i for i in indices if i.get("market_id") == "VN"]
+            if vn_indices:
+                idx_cols = st.columns(len(vn_indices[:5]))
+                for col, idx in zip(idx_cols, vn_indices[:5]):
+                    chg = float(idx.get("change_percent", 0))
+                    val = float(idx.get("current_value", 0))
+                    arrow = chr(0x25b2) if chg >= 0 else chr(0x25bc)
+                    col.metric(
+                        label=f"{idx.get('symbol', '')} (Mozyfin)",
+                        value=f"{val:,.2f}",
+                        delta=f"{arrow} {abs(chg):.2f}%",
+                        delta_color="normal" if chg >= 0 else "inverse",
+                    )
+                st.caption("Mozyfin live index data")
+        except Exception as _e:
+            logger.debug(f"Mozyfin indices banner: {_e}")
+
+    # -- Render UI Panes --
     col_l, col_r = st.columns([2, 1], gap="medium")
     
     with col_l:
-        tab_chart, tab_vp, tab_ai = st.tabs(["🚀 AI Forecast", " Inst. Flow (VP)", " AI Senate Debate"])
+        tab_chart, tab_vp, tab_ai, tab_mozy = st.tabs(["🚀 AI Forecast", "📊 Inst. Flow (VP)", "🧠 AI Senate Debate", "🇻🇳 Mozyfin Analysis"])
         
+        # ── Mozyfin Analysis Tab ─────────────────────────────────────────
+        with tab_mozy:
+            st.markdown("### 🇻🇳 Mozyfin AI Analysis")
+            st.caption("Phân tích bởi Mozyfin AI — dữ liệu từ báo cáo thực tế, tin tức")
+
+            mozy2 = _get_mozyfin_client()
+            if not mozy2:
+                st.warning("Mozyfin API key chưa cấu hình. Thêm MOZYFIN_API_KEY vào .streamlit/secrets.toml")
+            else:
+                clean_sym = symbol.replace(".VN", "").replace(".TW", "")
+                entity_data = {}
+                news_data = []
+                try:
+                    entity_data = mozy2.search_entity(clean_sym)
+                    news_data = mozy2.get_news(clean_sym, limit=5)
+                except Exception as _e:
+                    logger.debug(f"Mozyfin data: {_e}")
+
+                if entity_data:
+                    e1, e2, e3 = st.columns(3)
+                    price = entity_data.get("current_price", 0)
+                    mcap = entity_data.get("market_cap", 0)
+                    e1.metric("Tên", entity_data.get("local_short_name") or entity_data.get("short_name", "-"))
+                    e2.metric("Giá hiện tại", f"{price:,.0f}" if price else "-")
+                    e3.metric("Vốn hóa", f"{mcap/1e12:.1f}T VND" if mcap else "-")
+                    profile = entity_data.get("profile", "")
+                    if profile:
+                        with st.expander("Giới thiệu doanh nghiệp", expanded=False):
+                            st.write(profile[:800] + ("..." if len(profile) > 800 else ""))
+
+                if news_data:
+                    st.markdown("#### 📰 Tin tức mới nhất")
+                    for article in news_data:
+                        title = article.get("title", "")
+                        content_snip = article.get("content", "")[:200]
+                        st.markdown(f"**{title}**")
+                        if content_snip:
+                            st.caption(content_snip + "...")
+                        st.divider()
+
+                st.markdown("#### 🤖 Phân tích AI Mozyfin")
+                usage = mozy2.get_usage()
+                credits_used = usage.get("credits_used", 0)
+                credits_cap = usage.get("credits_cap", 50)
+                st.caption(f"Credits đã dùng: {credits_used}/{credits_cap} (1 credit/lần)")
+                mozy_key = f"mozyfin_analysis_{clean_sym}"
+                if mozy_key not in st.session_state:
+                    st.session_state[mozy_key] = ""
+                if st.button(
+                    f"🔍 Phân tích {clean_sym} bằng Mozyfin AI",
+                    key=f"mozy_btn_{clean_sym}",
+                    disabled=(credits_used >= credits_cap),
+                ):
+                    with st.spinner("Mozyfin AI đang phân tích... (~30-60 giây)"):
+                        result = mozy2.analyze_stock(clean_sym)
+                        st.session_state[mozy_key] = result
+                        st.rerun()
+                if st.session_state.get(mozy_key):
+                    analysis_text = st.session_state[mozy_key]
+                    st.markdown("---")
+                    st.markdown(analysis_text)
+                elif credits_used >= credits_cap:
+                    st.warning("Đã hết credits tháng này.")
+                else:
+                    st.info("Bấm nút để nhận phân tích AI từ dữ liệu báo cáo thực tế.")
+
         with tab_chart:
             st.markdown("### 📈 Price & Forecast Band")
             
@@ -2395,4 +2500,5 @@ def render():
         Last Refresh: {ts_display}
     </div>
     """)
+
 
