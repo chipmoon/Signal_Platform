@@ -2386,7 +2386,9 @@ def render():
 
                     if st.button(btn_label, key=f"ai_btn_{clean_sym}"):
                         with st.spinner(spin_msg):
-                            result = analyst.analyze_stock(clean_sym)
+                            # Pass market so Gemini uses correct language/style
+                            _mkt = "TW" if ".TW" in symbol or symbol.isdigit() else "VN"
+                            result = analyst.analyze_stock(clean_sym, market=_mkt)
                             st.session_state[ai_key] = result
                             st.session_state[f"{ai_key}_prov"] = provider
                             st.rerun()
