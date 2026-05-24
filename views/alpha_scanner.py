@@ -1,12 +1,28 @@
 """Alpha Scanner View."""
 
+import json
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from src.strategies.alpha_scanner import AlphaScannerEngine
 
+_NIGHTLY_JSON = Path(__file__).resolve().parents[1] / "data" / "nightly_scan_results.json"
+_NIGHTLY_META = Path(__file__).resolve().parents[1] / "data" / "nightly_scan_meta.json"
+
+
+def _load_nightly() -> tuple[pd.DataFrame | None, dict]:
+    """Load pre-computed nightly scan results."""
+    if not _NIGHTLY_JSON.exists():
+        return None, {}
+    try:
+        data = json.loads(_NIGHTLY_JSON.read_text(encoding="utf-8"))
+        meta = json.loads(_NIGHTLY_META.read_text(encoding="utf-8")) if _NIGHTLY_META.exists() else {}
+        return pd.DataFrame(data), meta
+    except Exception:
+        return None, {}
 
 def _fmt_pct(v: float) -> str:
     return f"{v:+.2f}%" if pd.notna(v) else "N/A"
@@ -61,8 +77,63 @@ def _apply_preset_filter(df: pd.DataFrame, preset: str) -> pd.DataFrame:
 
 def render() -> None:
     st.title("Global Alpha Scanner")
-    st.markdown("Top 10 ideas for **1-3 month** holding window (Vietnam + Taiwan)")
+    st.markdown("Top ideas for **1-3 month** holding window (Vietnam + Taiwan)")
     st.markdown("---")
+
+    # ── Nightly Pre-Computed Results (fastest path) ────────────────────────────
+    nightly_df, meta = _load_nightly()
+    if nightly_df is not None and not nightly_df.empty:
+        gen_at = meta.get("generated_at_readable", "unknown")
+        total = meta.get("total_candidates", len(nightly_df))
+        st.success(f"Nightly scan ready — **{total} candidates** | Generated: {gen_at}")
+
+        with st.expander("Top 20 Nightly Picks (pre-computed, full 700-stock universe)", expanded=True):
+            show_cols = [
+                "symbol", "name", "recommendation", "institutional_score",
+                "pred_21d_ret", "pred_63d_ret", "confidence_boosted",
+                "wyckoff_phase", "qmf_score", "stoch_state", "veto", "veto_reason",
+            ]
+            available = [c for c in show_cols if c in nightly_df.columns]
+            display = nightly_df[available].copy()
+
+            # Format columns for readability
+            for col in ["pred_21d_ret", "pred_63d_ret"]:
+                if col in display.columns:
+                    display[col] = display[col].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "N/A")
+            if "confidence_boosted" in display.columns:
+                display["confidence_boosted"] = (display["confidence_boosted"] * 100).round(1).astype(str) + "%"
+            if "institutional_score" in display.columns:
+                display["institutional_score"] = display["institutional_score"].round(3)
+            if "qmf_score" in display.columns:
+                display["qmf_score"] = display["qmf_score"].round(2)
+            if "veto" in display.columns:
+                display["veto"] = display["veto"].map(lambda x: "YES" if x else "NO")
+
+            # Summary metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Picks", len(nightly_df))
+            if "recommendation" in nightly_df.columns:
+                m2.metric("STRONG BUY", int((nightly_df["recommendation"] == "STRONG BUY").sum()))
+                m3.metric("BUY", int((nightly_df["recommendation"] == "BUY").sum()))
+            if "veto" in nightly_df.columns:
+                m4.metric("Veto Active", int(nightly_df["veto"].sum()) if nightly_df["veto"].dtype == bool else 0)
+
+            st.dataframe(display, hide_index=True, use_container_width=True)
+
+            if "recommendation" in nightly_df.columns:
+                st.download_button(
+                    "Export Nightly Results CSV",
+                    nightly_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"nightly_alpha_{meta.get('scan_date', datetime.now().strftime('%Y%m%d'))}.csv",
+                    mime="text/csv",
+                )
+        st.markdown("---")
+        st.caption("Run live scan below to refresh with real-time data (slower, needs internet)")
+    else:
+        st.info("No nightly results yet. Run `python scripts/nightly_full_scan.py --push` locally to generate.")
+
+    st.markdown("---")
+    st.subheader("Live Alpha Scan (Real-time)")
 
     if "scan_results" not in st.session_state:
         st.session_state.scan_results = None
