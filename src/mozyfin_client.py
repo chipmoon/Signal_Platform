@@ -49,14 +49,43 @@ class MozyfinClient:
 
     @staticmethod
     def _load_key() -> Optional[str]:
+        # 1. Environment variable (highest priority)
         key = os.environ.get("MOZYFIN_API_KEY")
         if key:
             return key
+
+        # 2. Streamlit Cloud secrets (bracket notation — works on Streamlit Cloud)
         try:
             import streamlit as st
-            return st.secrets.get("MOZYFIN_API_KEY")
+            key = st.secrets["MOZYFIN_API_KEY"]
+            if key:
+                return str(key)
         except Exception:
             pass
+
+        # 3. Streamlit secrets via .get() (fallback)
+        try:
+            import streamlit as st
+            key = st.secrets.get("MOZYFIN_API_KEY", "")
+            if key:
+                return str(key)
+        except Exception:
+            pass
+
+        # 4. Local .streamlit/secrets.toml file (for local dev)
+        try:
+            from pathlib import Path
+            secrets_path = Path(__file__).resolve().parents[1] / ".streamlit" / "secrets.toml"
+            if secrets_path.exists():
+                content = secrets_path.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    if "MOZYFIN_API_KEY" in line and "=" in line:
+                        key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if key:
+                            return key
+        except Exception:
+            pass
+
         return None
 
     def _get(self, path: str, params: dict = None) -> dict:
