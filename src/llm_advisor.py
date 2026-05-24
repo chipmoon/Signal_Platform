@@ -36,9 +36,9 @@ class GeminiAdvisor:
         if not self._api_key:
             return "⚠️ AI Offline: Thiếu GOOGLE_API_KEY trong .env"
 
-        # Multi-Model Candidates — updated to 2025 models
-        models = ["models/gemini-2.5-flash", "models/gemini-2.0-flash", "models/gemini-1.5-flash"]
-        
+        # Multi-Model Candidates — no 'models/' prefix (URL template adds it)
+        models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
         # Multi-Version endpoints
         versions = ["v1beta", "v1"]
         
