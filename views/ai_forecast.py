@@ -2230,7 +2230,7 @@ def render():
     if _FUND_AVAILABLE:
         try:
             _fund_key = f"fund_{symbol}"
-            if _fund_key not in st.session_state:
+            if _fund_key not in st.session_state or not st.session_state[_fund_key] or st.session_state[_fund_key].get("data_coverage", 0) == 0:
                 st.session_state[_fund_key] = get_fundamental_dict(symbol, market)
             fund_state = st.session_state[_fund_key]
         except Exception as _e:

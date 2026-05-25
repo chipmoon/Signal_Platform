@@ -1163,21 +1163,45 @@
     "updated": "2026-05-25T07:49:37.335900"
   },
   "fundamentals_VCB_VN": {
-    "updated": "2026-05-25T07:53:40.897068"
+    "updated": "2026-05-25T19:27:36.855445"
   },
   "fundamentals_BID_VN": {
-    "updated": "2026-05-25T07:53:48.374338"
+    "updated": "2026-05-25T19:27:50.615242"
   },
   "fundamentals_CTG_VN": {
-    "updated": "2026-05-25T07:53:55.986040"
+    "updated": "2026-05-25T19:28:04.378761"
   },
   "fundamentals_TCB_VN": {
-    "updated": "2026-05-25T07:54:03.803798"
+    "updated": "2026-05-25T19:28:17.790729"
   },
   "fundamentals_MBB_VN": {
-    "updated": "2026-05-25T07:54:11.738474"
+    "updated": "2026-05-25T19:28:31.736866"
   },
   "fundamentals_ACB_VN": {
-    "updated": "2026-05-25T07:54:19.413454"
+    "updated": "2026-05-25T19:28:45.685689"
+  },
+  "fundamentals_VPB_VN": {
+    "updated": "2026-05-25T19:28:59.320079"
+  },
+  "fundamentals_STB_VN": {
+    "updated": "2026-05-25T19:29:12.771882"
+  },
+  "fundamentals_HDB_VN": {
+    "updated": "2026-05-25T19:29:26.581438"
+  },
+  "fundamentals_LPB_VN": {
+    "updated": "2026-05-25T19:29:40.463872"
+  },
+  "fundamentals_SSB_VN": {
+    "updated": "2026-05-25T19:29:53.928558"
+  },
+  "fundamentals_EIB_VN": {
+    "updated": "2026-05-25T19:30:07.582558"
+  },
+  "fundamentals_OCB_VN": {
+    "updated": "2026-05-25T19:30:20.941177"
+  },
+  "fundamentals_TPB_VN": {
+    "updated": "2026-05-25T19:30:34.672030"
   }
 }
