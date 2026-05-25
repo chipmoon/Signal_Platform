@@ -256,8 +256,8 @@
     "end": "2026-03-02 00:00:00"
   },
   "stock_list_TW": {
-    "updated": "2026-05-15T08:15:37.964537",
-    "count": 1975
+    "updated": "2026-05-24T22:13:22.759376",
+    "count": 1979
   },
   "price_BKC_VN": {
     "updated": "2026-05-15T08:14:02.293894",
@@ -1158,5 +1158,26 @@
     "rows": 248,
     "start": "2025-05-26 00:00:00",
     "end": "2026-05-22 00:00:00"
+  },
+  "fundamentals_HPG_VN": {
+    "updated": "2026-05-25T07:49:37.335900"
+  },
+  "fundamentals_VCB_VN": {
+    "updated": "2026-05-25T07:53:40.897068"
+  },
+  "fundamentals_BID_VN": {
+    "updated": "2026-05-25T07:53:48.374338"
+  },
+  "fundamentals_CTG_VN": {
+    "updated": "2026-05-25T07:53:55.986040"
+  },
+  "fundamentals_TCB_VN": {
+    "updated": "2026-05-25T07:54:03.803798"
+  },
+  "fundamentals_MBB_VN": {
+    "updated": "2026-05-25T07:54:11.738474"
+  },
+  "fundamentals_ACB_VN": {
+    "updated": "2026-05-25T07:54:19.413454"
   }
 }

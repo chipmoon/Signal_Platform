@@ -96,16 +96,29 @@ def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
         "profit_margin": None
     }
     
-    try:
-        from vnstock import Vnstock
-        import pandas as pd
-        stock = Vnstock().stock(symbol=base_symbol, source="VCI")
-        inc = stock.finance.income_statement(period="quarter", lang="vi")
-        bs = stock.finance.balance_sheet(period="quarter", lang="vi")
-        cf = stock.finance.cash_flow(period="quarter", lang="vi")
-    except Exception as e:
-        logger.warning(f"Failed to fetch vnstock reports for {base_symbol}: {e}")
-        return data
+    import time
+    for attempt in range(3):
+        try:
+            from vnstock import Vnstock
+            import pandas as pd
+            stock = Vnstock().stock(symbol=base_symbol, source="VCI")
+            inc = stock.finance.income_statement(period="quarter", lang="vi")
+            bs = stock.finance.balance_sheet(period="quarter", lang="vi")
+            cf = stock.finance.cash_flow(period="quarter", lang="vi")
+            
+            # Verify we got valid dataframes (not empty/None)
+            if inc is not None and not inc.empty and bs is not None and not bs.empty and cf is not None and not cf.empty:
+                break
+            else:
+                raise ValueError("One or more financial statements returned empty")
+        except BaseException as e:
+            err_str = str(e) or e.__class__.__name__
+            logger.warning(f"Attempt {attempt+1} failed for {base_symbol} (possibly rate limit/blocked): {err_str}")
+            if attempt < 2:
+                logger.info("Waiting 45 seconds to reset rate limit...")
+                time.sleep(45)
+            else:
+                return data
 
     try:
         meta_cols = {'item_id', 'item_en', 'item'}

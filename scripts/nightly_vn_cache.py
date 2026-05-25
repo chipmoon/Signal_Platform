@@ -216,6 +216,10 @@ def main():
         except Exception as e:
             logger.error(f"  {sym} fundamentals fetch error: {e}")
 
+        # Throttle to stay under rate limits (e.g. 20 requests/min)
+        import time
+        time.sleep(6)
+
     # Summary
     logger.info("=" * 50)
     logger.success(f"vnstock: {len(ok_vnstock)} | yfinance: {len(ok_yfinance)} | failed: {len(failed)}")

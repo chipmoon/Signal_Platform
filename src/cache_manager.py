@@ -211,6 +211,54 @@ class CacheManager:
             logger.warning(f"Failed to read price cache {path}: {e}")
             return None
 
+    # ─── Fundamental Data Cache ────────────────────────────────
+    
+    def cache_fundamentals(self, symbol: str, market: str, data: dict) -> None:
+        """Cache fundamental data for a symbol as JSON."""
+        fundamentals_dir = self.cache_dir / "fundamentals"
+        fundamentals_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = symbol.replace(".", "_").replace("=", "_").replace("-", "_")
+        path = fundamentals_dir / f"{safe_name}_{market}.json"
+        
+        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        
+        key = f"fundamentals_{symbol}_{market}"
+        self._meta[key] = {
+            "updated": datetime.now().isoformat(),
+        }
+        self._save_meta()
+        logger.info(f"Cached fundamentals for {symbol} ({market})")
+
+    def get_cached_fundamentals(
+        self, symbol: str, market: str, max_age_hours: int = 168
+    ) -> Optional[dict]:
+        """
+        Get cached fundamental data if it exists and is fresh.
+        Default max age is 7 days since fundamentals change slowly.
+        """
+        safe_name = symbol.replace(".", "_").replace("=", "_").replace("-", "_")
+        path = self.cache_dir / "fundamentals" / f"{safe_name}_{market}.json"
+        
+        if not path.exists():
+            return None
+            
+        key = f"fundamentals_{symbol}_{market}"
+        meta = self._meta.get(key, {})
+        if meta:
+            try:
+                updated = datetime.fromisoformat(meta["updated"])
+                age = datetime.now() - updated
+                if age > timedelta(hours=max_age_hours):
+                    return None
+            except Exception:
+                pass
+                
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"Failed to read fundamental cache {path}: {e}")
+            return None
+
     # ─── Cache Stats ───────────────────────────────────────────
 
     def get_stats(self) -> Dict:
