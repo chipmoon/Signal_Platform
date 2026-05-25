@@ -247,8 +247,10 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
                 cache.cache_fundamentals(symbol, market, data)
         else:
             try:
-                ticker = yf.Ticker(yf_ticker)
-                info = ticker.info
+                from src.plugins.taiwan import _safe_yfinance_env
+                with _safe_yfinance_env():
+                    ticker = yf.Ticker(yf_ticker)
+                    info = ticker.info
                 if info and info.get("symbol") is not None:
                     # Normalize yfinance values
                     roe = _safe_float(info.get("returnOnEquity"))
