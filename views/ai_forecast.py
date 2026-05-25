@@ -2197,7 +2197,6 @@ def render():
             # Fallback for VN stocks if yfinance is blocked/empty
             if _df_wk.empty and market == "VN":
                 from pathlib import Path
-                import pandas as pd
                 _cache_p = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{symbol}_VN.parquet"
                 if _cache_p.exists():
                     _df_daily = pd.read_parquet(_cache_p, engine="pyarrow")

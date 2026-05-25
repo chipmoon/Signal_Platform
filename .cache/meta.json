@@ -1160,7 +1160,7 @@
     "end": "2026-05-22 00:00:00"
   },
   "fundamentals_HPG_VN": {
-    "updated": "2026-05-25T07:49:37.335900"
+    "updated": "2026-05-25T19:35:21.804459"
   },
   "fundamentals_VCB_VN": {
     "updated": "2026-05-25T19:27:36.855445"
@@ -1203,5 +1203,65 @@
   },
   "fundamentals_TPB_VN": {
     "updated": "2026-05-25T19:30:34.672030"
+  },
+  "fundamentals_SHB_VN": {
+    "updated": "2026-05-25T19:30:48.944057"
+  },
+  "fundamentals_EVF_VN": {
+    "updated": "2026-05-25T19:31:02.664983"
+  },
+  "fundamentals_VIC_VN": {
+    "updated": "2026-05-25T19:31:16.351878"
+  },
+  "fundamentals_VHM_VN": {
+    "updated": "2026-05-25T19:31:29.903891"
+  },
+  "fundamentals_VRE_VN": {
+    "updated": "2026-05-25T19:31:44.599843"
+  },
+  "fundamentals_KDH_VN": {
+    "updated": "2026-05-25T19:31:57.944520"
+  },
+  "fundamentals_NVL_VN": {
+    "updated": "2026-05-25T19:32:11.326206"
+  },
+  "fundamentals_PDR_VN": {
+    "updated": "2026-05-25T19:32:24.886016"
+  },
+  "fundamentals_DXG_VN": {
+    "updated": "2026-05-25T19:32:38.450316"
+  },
+  "fundamentals_IJC_VN": {
+    "updated": "2026-05-25T19:32:52.271988"
+  },
+  "fundamentals_SIP_VN": {
+    "updated": "2026-05-25T19:33:20.156521"
+  },
+  "fundamentals_HDC_VN": {
+    "updated": "2026-05-25T19:33:33.547237"
+  },
+  "fundamentals_HAG_VN": {
+    "updated": "2026-05-25T19:33:47.233712"
+  },
+  "fundamentals_LCG_VN": {
+    "updated": "2026-05-25T19:34:00.668320"
+  },
+  "fundamentals_VPI_VN": {
+    "updated": "2026-05-25T19:34:13.838601"
+  },
+  "fundamentals_CII_VN": {
+    "updated": "2026-05-25T19:34:27.251594"
+  },
+  "fundamentals_HDG_VN": {
+    "updated": "2026-05-25T19:34:40.561520"
+  },
+  "fundamentals_PC1_VN": {
+    "updated": "2026-05-25T19:34:54.332098"
+  },
+  "fundamentals_VCG_VN": {
+    "updated": "2026-05-25T19:35:08.016822"
+  },
+  "fundamentals_GAS_VN": {
+    "updated": "2026-05-25T19:35:35.327984"
   }
 }
