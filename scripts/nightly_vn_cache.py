@@ -29,33 +29,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 from loguru import logger
 
-# ── Top 95 VN stocks confirmed available on yfinance ──────────────────────────
+# ── Top VN stocks (expanded to ~115, includes oil&gas, steel, aviation) ──────────
 TOP_VN_STOCKS = [
-    # Banks
+    # Banks (17)
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "HDB",
-    "LPB", "SSB", "EIB", "OCB", "TPB", "SHB", "EVF",
-    # Real Estate
+    "LPB", "SSB", "EIB", "OCB", "TPB", "SHB", "EVF", "VBB",
+    # Real Estate (20)
     "VIC", "VHM", "VRE", "KDH", "NVL", "PDR", "DXG", "IJC", "TDC",
     "SIP", "HDC", "HAG", "LCG", "VPI", "CII", "HDG", "PC1", "VCG",
-    # Industry & Materials
-    "HPG", "GAS", "PLX", "GVR", "BSR", "DGC", "PHR", "DPR", "TRC",
+    "NLG", "SZC",
+    # Oil & Gas (6) — NEWLY ADDED
+    "PVS", "PVD", "PVT", "PVB", "PVI", "GAS",
+    # Industry & Materials (24)
+    "HPG", "PLX", "GVR", "BSR", "DGC", "PHR", "DPR", "TRC",
     "BMP", "AAA", "LSS", "PPC", "NT2", "POW", "GEG", "BWE", "KHP",
-    "REE", "GEX", "HHV", "PVT",
-    # Consumer & Retail
+    "REE", "GEX", "HHV",
+    "NKG", "TLH", "SMC", "HSG",
+    # Consumer & Retail (16)
     "SAB", "MSN", "VNM", "MWG", "PNJ", "TLG", "DHC", "DBC", "PAN",
-    "VHC", "HAX", "HAH", "VTO", "ASM", "CSV",
-    # Technology
-    "FPT", "CMG", "VNE",
-    # Aviation & Transport
-    "VJC", "GMD",
-    # Financials / Securities
-    "SSI", "VCI", "HCM", "VND", "BSI", "ORS", "CTS", "FTS", "VDS",
-    # Construction
-    "CTD", "FCN", "VCG",
-    # Agriculture
-    "AGR", "DPM", "DCM",
-    # Others
-    "BVH", "BCM", "SCS", "TDM", "DBC", "TV2",
+    "VHC", "HAX", "HAH", "VTO", "ASM", "CSV", "BHN",
+    # Technology (4)
+    "FPT", "CMG", "VNE", "SGT",
+    # Aviation & Transport (3)
+    "VJC", "GMD", "HVN",
+    # Financials / Securities (10)
+    "SSI", "VCI", "HCM", "VND", "BSI", "ORS", "CTS", "FTS", "VDS", "MBS",
+    # Construction (3)
+    "CTD", "FCN", "HBC",
+    # Agriculture & Fertilizer (4)
+    "AGR", "DPM", "DCM", "DDV",
+    # Pharma (3)
+    "DHG", "IMP", "TRA",
+    # Others (6)
+    "BVH", "BCM", "SCS", "TDM", "TV2", "VGC",
 ]
 
 # Deduplicate
@@ -132,7 +138,7 @@ def update_stock_list_cache(symbols: list[str], cache_dir: Path) -> None:
 
 
 def git_push(project_root: Path) -> bool:
-    """Commit cache files and push to GitHub."""
+    """Commit cache files and push to GitHub (both master and main branches)."""
     try:
         cache_dir = project_root / ".cache"
         subprocess.run(
@@ -147,11 +153,17 @@ def git_push(project_root: Path) -> bool:
         if "nothing to commit" in result.stdout:
             logger.info("No cache changes to push")
             return True
+        # Push to master first
         subprocess.run(
-            ["git", "push", "origin", "main"],
+            ["git", "push", "origin", "master"],
             cwd=project_root, check=True, capture_output=True
         )
-        logger.success(f"Pushed cache to GitHub at {timestamp}")
+        # Sync master → main (Streamlit Cloud deploys from main)
+        subprocess.run(["git", "checkout", "main"], cwd=project_root, check=True, capture_output=True)
+        subprocess.run(["git", "merge", "master", "--ff-only"], cwd=project_root, check=True, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=project_root, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "master"], cwd=project_root, check=True, capture_output=True)
+        logger.success(f"Pushed cache to GitHub (master + main) at {timestamp}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"Git push failed: {e}")

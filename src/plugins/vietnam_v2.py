@@ -1,4 +1,4 @@
-﻿"""
+"""
 Vietnam Stock Provider Plugin v2.0
 ===================================
 Enhanced with:
@@ -93,27 +93,41 @@ def _safe_err(e: Exception) -> str:
         return e.__class__.__name__
 
 
-# ── Hardcoded top-95 VN stocks confirmed on yfinance ──────────────────────────
+# ── Hardcoded VN stocks (expanded ~115) confirmed on vnstock/yfinance ──────────────
 # Used as fallback when vnstock API is blocked (e.g. Streamlit Cloud)
-# Update this list by running: python scripts/check_yfinance_vn_coverage.py
+# Synchronized with scripts/nightly_vn_cache.py — update both together
 _TOP_95_VN: List[Dict[str, str]] = [
     {"symbol": s, "name": s, "exchange": "HOSE", "sector": "Other"}
     for s in [
+        # Banks (17)
         "VCB","BID","CTG","TCB","MBB","ACB","VPB","STB","HDB","LPB",
-        "SSB","EIB","OCB","TPB","SHB","EVF",
+        "SSB","EIB","OCB","TPB","SHB","EVF","VBB",
+        # Real Estate (20)
         "VIC","VHM","VRE","KDH","NVL","PDR","DXG","IJC","TDC",
-        "SIP","HDC","HAG","LCG","VPI","CII","HDG","PC1","VCG",
-        "HPG","GAS","PLX","GVR","BSR","DGC","PHR","DPR","TRC",
+        "SIP","HDC","HAG","LCG","VPI","CII","HDG","PC1","VCG","NLG","SZC",
+        # Oil & Gas (6)
+        "PVS","PVD","PVT","PVB","PVI","GAS",
+        # Industry & Materials (24)
+        "HPG","PLX","GVR","BSR","DGC","PHR","DPR","TRC",
         "BMP","AAA","LSS","PPC","NT2","POW","GEG","BWE","KHP",
-        "REE","GEX","HHV","PVT",
+        "REE","GEX","HHV","NKG","TLH","SMC","HSG",
+        # Consumer & Retail (16)
         "SAB","MSN","VNM","MWG","PNJ","TLG","DHC","DBC","PAN",
-        "VHC","HAX","HAH","VTO","ASM","CSV",
-        "FPT","CMG","VNE",
-        "VJC","GMD",
-        "SSI","VCI","HCM","VND","BSI","ORS","CTS","FTS","VDS",
-        "CTD","FCN",
-        "AGR","DPM","DCM",
-        "BVH","BCM","SCS","TDM","TV2",
+        "VHC","HAX","HAH","VTO","ASM","CSV","BHN",
+        # Technology (4)
+        "FPT","CMG","VNE","SGT",
+        # Aviation & Transport (3)
+        "VJC","GMD","HVN",
+        # Financials / Securities (10)
+        "SSI","VCI","HCM","VND","BSI","ORS","CTS","FTS","VDS","MBS",
+        # Construction (3)
+        "CTD","FCN","HBC",
+        # Agriculture & Fertilizer (4)
+        "AGR","DPM","DCM","DDV",
+        # Pharma (3)
+        "DHG","IMP","TRA",
+        # Others (6)
+        "BVH","BCM","SCS","TDM","TV2","VGC",
     ]
 ]
 
