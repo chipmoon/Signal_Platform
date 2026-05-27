@@ -3306,13 +3306,13 @@ def _render_foreign_flow_position_panel(
 
         # Chỉ số chi tiết
         m1, m2 = st.columns(2)
-        m1.metric("Số tiền (triệu VND)", f"{amount_m:,.0f}")
-        m2.metric("Số cổ phiếu (lô 100)", f"{shares:,}")
+        m1.metric("Vốn giải ngân", f"{amount_m:,.0f} tr. VND")
+        m2.metric("Số lượng mua", f"{shares:,} cp")
 
         m3, m4 = st.columns(2)
-        m3.metric("Dừng lỗ khuyến nghị", f"{stop_pct:.1f}%")
-        m4.metric("Rủi ro", _risk_label_vi.get(risk_level, risk_level),
-                  delta=f"Biến động {ann_vol:.0f}%",
+        m3.metric("Mức dừng lỗ", f"{stop_pct:.1f}%")
+        m4.metric("Mức rủi ro", _risk_label_vi.get(risk_level, risk_level),
+                  delta=f"Vol {ann_vol:.0f}%",
                   delta_color="inverse" if risk_level in ("High", "Avoid") else "normal")
 
         # Guidance text
