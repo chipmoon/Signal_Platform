@@ -88,15 +88,23 @@ def _merge_flow_into_parquet(symbol: str, stock_code: str, flow_df: pd.DataFrame
             existing = pd.read_parquet(parquet_path, engine="pyarrow")
             logger.info(f"  {symbol}: Loaded existing price cache ({len(existing)} rows)")
         else:
-            # Bootstrap using yfinance
+            # Bootstrap using yfinance — try canonical symbol first, then .TWO for OTC board
             logger.info(f"  {symbol}: Parquet not found. Bootstrapping price history via yfinance...")
-            ticker = yf.Ticker(symbol)
-            df_price = ticker.history(period="2y", interval="1d")
+            df_price = pd.DataFrame()
+            for _try_sym in [symbol, symbol.replace(".TW", ".TWO")]:
+                try:
+                    ticker = yf.Ticker(_try_sym)
+                    _hist = ticker.history(period="2y", interval="1d")
+                    if not _hist.empty:
+                        df_price = _hist.reset_index()
+                        logger.info(f"  {symbol}: Bootstrap succeeded with symbol {_try_sym!r}")
+                        break
+                except Exception:
+                    pass
+                    
             if df_price.empty:
                 logger.warning(f"  {symbol}: yfinance returned empty price history. Cannot bootstrap.")
                 return False
-                
-            df_price = df_price.reset_index()
             if "Date" not in df_price.columns and "Datetime" in df_price.columns:
                 df_price = df_price.rename(columns={"Datetime": "Date"})
             elif "Date" not in df_price.columns and "index" in df_price.columns:

@@ -3250,16 +3250,22 @@ def _render_foreign_flow_position_panel(
     with col_pos:
         st.markdown("#### 💰 Khuyến Nghị Giải Ngân")
 
+        # Detect market currency
+        _is_tw = market == "TW"
+        _currency     = "NTD" if _is_tw else "VND"      # display currency label
+        _lot_size_lbl = "lô lẻ 1 cp" if _is_tw else "lô 100 cp"  # lot size hint
+        _TWD_TO_VND   = 800.0  # rough conversion rate: 1 NTD ≈ 800 VND
+
         # Nhập tổng vốn đầu tư
         portfolio_vnd = st.number_input(
-            "Tổng vốn đầu tư (VND)",
+            f"Tổng vốn đầu tư (VND)",
             min_value=10_000_000,
             max_value=100_000_000_000,
             value=st.session_state.get("portfolio_value_vnd", 1_000_000_000),
             step=100_000_000,
             format="%d",
             key="portfolio_value_vnd",
-            help="Nhập tổng vốn để tính số lượng cổ phiếu và số tiền khuyến nghị",
+            help=f"Nhập tổng vốn (VND) để tính số lượng cổ phiếu và số tiền khuyến nghị. {'Giá TW tự động chuyển đổi sang VND (1 NTD ≈ 800 VND).' if _is_tw else ''}",
         )
         # Recalculate if portfolio changes
         if portfolio_vnd != pos.get("_portfolio", portfolio_vnd):
@@ -3306,12 +3312,14 @@ def _render_foreign_flow_position_panel(
         )
 
         # ── Detail metrics as a custom premium HTML grid (solves all truncation/scaling issues) ──
+        # For TW stocks: show amount in NTD equivalent (amount_m is VND, convert back for display)
+        _amount_display = f"{amount_m / _TWD_TO_VND:,.1f} tr. NTD" if _is_tw else f"{amount_m:,.0f} tr. VND"
         st.markdown(
             f"""
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
                 <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
                     <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Vốn giải ngân</div>
-                    <div style="font-size: 1.3rem; font-weight: 800; color: #e2e8f0; margin-top: 4px;">{amount_m:,.0f} tr. VND</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; color: #e2e8f0; margin-top: 4px;">{_amount_display}</div>
                 </div>
                 <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
                     <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Số lượng mua</div>
@@ -3335,15 +3343,18 @@ def _render_foreign_flow_position_panel(
 
         # Guidance text
         if alloc_pct > 0:
-            current_price_str = f"{df['Close'].iloc[-1]:,.0f}" if not df.empty else "N/A"
-            stop_price_vnd = float(df["Close"].iloc[-1]) * (1 - stop_pct / 100) if not df.empty else 0
+            _last_close = float(df["Close"].iloc[-1]) if not df.empty else 0
+            current_price_str = f"{_last_close:,.0f}"
+            stop_price_raw  = _last_close * (1 - stop_pct / 100)
+            # Convert for display: TW shows NTD, VN shows VND
+            _capital_display = f"{amount_m / _TWD_TO_VND:,.1f} triệu NTD" if _is_tw else f"{amount_m:,.0f} triệu VND"
             st.markdown(
                 f'<div style="background:rgba(14,165,233,0.06);border-left:3px solid #0ea5e9;'
                 f'padding:12px;border-radius:6px;font-size:0.8rem;color:#cbd5e1;">'
-                f'<b>Giá hiện tại:</b> {current_price_str} VND<br>'
-                f'<b>Dừng lỗ (~{stop_pct:.1f}%):</b> {stop_price_vnd:,.0f} VND<br>'
-                f'<b>Chiến lược:</b> Giải ngân {alloc_pct:.0f}% vốn ({amount_m:,.0f} triệu VND) '
-                f'→ {shares:,} cổ phiếu (lô 100 cp). '
+                f'<b>Giá hiện tại:</b> {current_price_str} {_currency}<br>'
+                f'<b>Dừng lỗ (~{stop_pct:.1f}%):</b> {stop_price_raw:,.0f} {_currency}<br>'
+                f'<b>Chiến lược:</b> Giải ngân {alloc_pct:.0f}% vốn ({_capital_display}) '
+                f'→ {shares:,} cổ phiếu ({_lot_size_lbl}). '
                 f'Đặt dừng lỗ {stop_pct:.1f}% để bảo vệ vốn.<br>'
                 f'<br><b>Lưu ý:</b> Đây là khuyến nghị định lượng tự động. '
                 f'Kết hợp với phân tích kỹ thuật trước khi quyết định.</div>',
@@ -3354,6 +3365,6 @@ def _render_foreign_flow_position_panel(
 
         st.caption(
             f"Công thức: Rating → Tỷ trọng gốc → Điều chỉnh ATR (biến động {ann_vol:.0f}%) → Tỷ trọng cuối. "
-            f"Danh mục mặc định: 1 tỷ VND. Thay đổi ở ô nhập bên trên."
+            f"Danh mục mặc định: 1 tỷ VND. {'Giá TW đã chuyển đổi 1 NTD ≈ 800 VND.' if _is_tw else 'Thay đổi ở ô nhập bên trên.'}"
         )
 
