@@ -158,9 +158,12 @@ def compute_position_size(
     # ── Monetary output ───────────────────────────────────────────────────────
     recommended_vnd = portfolio_value_vnd * (final_pct / 100.0)
     if current_price > 0:
-        recommended_shares = int(recommended_vnd / current_price)
-        # Round down to lot size (100 shares for VN)
-        lot_size = 100
+        is_tw = symbol.endswith(".TW") or symbol.endswith(".TWO") or (len(symbol) <= 6 and symbol.isdigit())
+        # Convert TWD to VND (1 TWD ~ 800 VND) for accurate share count calculation
+        price_in_vnd = current_price * 800.0 if is_tw else current_price
+        recommended_shares = int(recommended_vnd / price_in_vnd)
+        # Round down to lot size: 100 shares for VN, 1 share for TW odd lot (零股) trading
+        lot_size = 1 if is_tw else 100
         recommended_shares = (recommended_shares // lot_size) * lot_size
     else:
         recommended_shares = 0

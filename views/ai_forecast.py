@@ -2412,10 +2412,10 @@ def render():
 
             # ── Load df directly from parquet — has Foreign_Buy/Sell from nightly cache ──
             _df_for_flow = df_train  # fallback: provider API df (no flow cols)
-            if market == "VN":
+            if market in ("VN", "TW"):
                 try:
                     _pq_sym = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").replace("_VN", "").replace("_TW", "")
-                    _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{_pq_sym}_VN.parquet"
+                    _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{_pq_sym}_{market}.parquet"
                     if _pq.exists():
                         _df_pq = pd.read_parquet(_pq, engine="pyarrow")
                         _df_pq["Date"] = pd.to_datetime(_df_pq["Date"]).dt.tz_localize(None)
