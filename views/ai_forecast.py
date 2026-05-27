@@ -2397,7 +2397,7 @@ def render():
                 if _scan_files:
                     _latest_scan = max(_scan_files, key=lambda p: p.stat().st_mtime)
                     _scan_df = pd.read_excel(_latest_scan, sheet_name=0, engine="openpyxl")
-                    _clean_sym = symbol.replace("_VN", "").replace("_TW", "")
+                    _clean_sym = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").replace("_VN", "").replace("_TW", "")
                     _row = _scan_df[_scan_df["Symbol"].astype(str).str.strip() == _clean_sym]
                     if not _row.empty:
                         _mid_rating  = str(_row["Mid-term Rating (6M)"].iloc[0])
@@ -2414,7 +2414,8 @@ def render():
             _df_for_flow = df_train  # fallback: provider API df (no flow cols)
             if market == "VN":
                 try:
-                    _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{symbol}_VN.parquet"
+                    _pq_sym = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").replace("_VN", "").replace("_TW", "")
+                    _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{_pq_sym}_VN.parquet"
                     if _pq.exists():
                         _df_pq = pd.read_parquet(_pq, engine="pyarrow")
                         _df_pq["Date"] = pd.to_datetime(_df_pq["Date"]).dt.tz_localize(None)
@@ -3304,16 +3305,33 @@ def _render_foreign_flow_position_panel(
             unsafe_allow_html=True,
         )
 
-        # Chỉ số chi tiết
-        m1, m2 = st.columns(2)
-        m1.metric("Vốn giải ngân", f"{amount_m:,.0f} tr. VND")
-        m2.metric("Số lượng mua", f"{shares:,} cp")
-
-        m3, m4 = st.columns(2)
-        m3.metric("Mức dừng lỗ", f"{stop_pct:.1f}%")
-        m4.metric("Mức rủi ro", _risk_label_vi.get(risk_level, risk_level),
-                  delta=f"Vol {ann_vol:.0f}%",
-                  delta_color="inverse" if risk_level in ("High", "Avoid") else "normal")
+        # ── Detail metrics as a custom premium HTML grid (solves all truncation/scaling issues) ──
+        st.markdown(
+            f"""
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Vốn giải ngân</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; color: #e2e8f0; margin-top: 4px;">{amount_m:,.0f} tr. VND</div>
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Số lượng mua</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; color: #e2e8f0; margin-top: 4px;">{shares:,} cp</div>
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Mức dừng lỗ</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; color: #ef4444; margin-top: 4px;">-{stop_pct:.1f}%</div>
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 500;">Mức rủi ro</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; color: {risk_color}; margin-top: 4px;">
+                        {_risk_label_vi.get(risk_level, risk_level)}
+                        <span style="font-size: 0.7rem; font-weight: normal; color: #64748b; display: block; margin-top: 2px;">Vol {ann_vol:.0f}%</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         # Guidance text
         if alloc_pct > 0:
