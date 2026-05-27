@@ -2375,7 +2375,57 @@ def render():
     col_l, col_r = st.columns([2, 1], gap="medium")
     
     with col_l:
-        tab_chart, tab_vp, tab_ai = st.tabs(["🚀 AI Forecast", "📊 Inst. Flow (VP)", "🤖 AI Analysis"])
+        tab_chart, tab_vp, tab_ai, tab_flow = st.tabs([
+            "🚀 AI Forecast", "📊 Inst. Flow (VP)", "🤖 AI Analysis", "💰 Khối Ngoại"
+        ])
+
+        # ── Foreign Flow & Position Sizing Tab ─────────────────────────────
+        with tab_flow:
+            # ── Load actual rating strings from latest scan xlsx ──────────
+            # position_sizer.py expects exact strings like "⭐⭐⭐ Strong Buy",
+            # NOT generic "BUY"/"SELL" — must read from nightly_scanner output.
+            _mid_rating  = "⭐ Neutral"   # conservative defaults
+            _shrt_rating = "Neutral (Trung lập)"
+            try:
+                import glob as _glob
+                _scan_dir = Path(__file__).resolve().parents[1]
+                # Search for scan xlsx in root and output/ subdirectory
+                _scan_files = (
+                    list(_scan_dir.glob("scan_*.xlsx")) +
+                    list((_scan_dir / "output").glob("scan_*.xlsx"))
+                )
+                if _scan_files:
+                    _latest_scan = max(_scan_files, key=lambda p: p.stat().st_mtime)
+                    _scan_df = pd.read_excel(_latest_scan, sheet_name=0, engine="openpyxl")
+                    _clean_sym = symbol.replace("_VN", "").replace("_TW", "")
+                    _row = _scan_df[_scan_df["Symbol"].astype(str).str.strip() == _clean_sym]
+                    if not _row.empty:
+                        _mid_rating  = str(_row["Mid-term Rating (6M)"].iloc[0])
+                        _shrt_rating = str(_row["Short-term Rating (1-3M)"].iloc[0])
+            except Exception as _re:
+                logger.debug(f"tab_flow scan rating load failed: {_re}")
+                # Fallback: map from AI signal (rough approximation)
+                _mid_sig  = predictions.get(21, {}).get("signal", 0) if predictions else 0
+                _shrt_sig = predictions.get(5,  {}).get("signal", 0) if predictions else 0
+                _mid_rating  = "⭐⭐ Watch" if _mid_sig > 0 else ("⚠️ Avoid" if _mid_sig < 0 else "⭐ Neutral")
+                _shrt_rating = "⭐⭐ Buy (Sóng ngắn)" if _shrt_sig > 0 else ("Avoid (Giảm mạnh)" if _shrt_sig < 0 else "Neutral (Trung lập)")
+
+            # ── Load df directly from parquet — has Foreign_Buy/Sell from nightly cache ──
+            _df_for_flow = df_train  # fallback: provider API df (no flow cols)
+            if market == "VN":
+                try:
+                    _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{symbol}_VN.parquet"
+                    if _pq.exists():
+                        _df_pq = pd.read_parquet(_pq, engine="pyarrow")
+                        _df_pq["Date"] = pd.to_datetime(_df_pq["Date"]).dt.tz_localize(None)
+                        if "Foreign_Buy" in _df_pq.columns and "Foreign_Sell" in _df_pq.columns:
+                            _df_for_flow = _df_pq
+                except Exception as _fe:
+                    logger.debug(f"tab_flow parquet load failed: {_fe}")
+
+            _render_foreign_flow_position_panel(
+                symbol, market, _df_for_flow, _mid_rating, _shrt_rating
+            )
 
         # ── AI Analysis Tab (Unified: Gemini/Mozyfin + Senate Debate) ──────
         with tab_ai:
@@ -3028,3 +3078,264 @@ def _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state,
             '<div style="font-size:0.6rem;color:#475569;margin-top:8px;text-align:right;">'
             'SMC 20% · MTF 20% · Wyckoff 15% · Elliott 15% · Fundamental 15% · Volume 10%</div>',
             unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Foreign Flow & Position Sizing Panel  (NEW — added by upgrade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_foreign_flow_position_panel(
+    symbol: str,
+    market: str,
+    df: pd.DataFrame,
+    mid_rating: str = "",
+    short_rating: str = "",
+):
+    """
+    Render the Foreign Flow + Position Sizing tab for a single stock.
+    Designed to be called from the main AI Forecast page body.
+
+    Usage in the main page:
+        with tab_flow:
+            _render_foreign_flow_position_panel(symbol, market, df, mid_rating, short_rating)
+    """
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("plotly not installed — Foreign Flow charts unavailable")
+        return
+
+    # ── 1. Position Sizing Calculation ───────────────────────────────────────
+    pos = {
+        "recommended_allocation_pct": 0.0,
+        "recommended_vnd_million": 0.0,
+        "recommended_shares": 0,
+        "stop_loss_pct": 5.0,
+        "risk_level": "N/A",
+        "annualized_vol_pct": 0.0,
+        "sizing_basis": "N/A",
+        "notes": "PositionSizer not loaded",
+    }
+    try:
+        from src.analytics.position_sizer import compute_position_size
+        current_price = float(df["Close"].iloc[-1]) if not df.empty else 0
+        portfolio_input = st.session_state.get("portfolio_value_vnd", 1_000_000_000)
+        pos = compute_position_size(
+            symbol=symbol,
+            current_price=current_price,
+            mid_rating=mid_rating,
+            short_rating=short_rating,
+            df_price=df,
+            portfolio_value_vnd=portfolio_input,
+        )
+    except Exception as e:
+        logger.debug(f"Position sizer error in UI: {e}")
+
+    # ── 2. Foreign Flow Data from parquet cache ───────────────────────────────
+    flow_df = pd.DataFrame()
+    flow_available = False
+    try:
+        from src.strategies.real_flow_analyzer import RealFlowAnalyzer
+        rfa = RealFlowAnalyzer()
+        flow_result = rfa.generate_signals(df)
+        if flow_result["real_flow_available"].any():
+            flow_available = True
+            flow_df = flow_result[flow_result["real_flow_available"]].copy()
+    except Exception as e:
+        logger.debug(f"Flow analyzer UI error: {e}")
+
+    # ── 3. Render Header ──────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="background:linear-gradient(135deg,rgba(14,165,233,0.12),rgba(99,102,241,0.08));"'
+        'class=""></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("### 🌊 Dòng Tiền Khối Ngoại & Khuyến Nghị Vốn")
+
+    col_flow, col_pos = st.columns([1, 1], gap="large")
+
+    # ── 4. Foreign Flow Section ───────────────────────────────────────────────
+    with col_flow:
+        st.markdown("#### Dòng Tiền Khối Ngoại (Mua/Bán Ròng)")
+        if flow_available and not flow_df.empty:
+            # Gauge: latest 3-session average flow score
+            raw_score = float(flow_df["real_flow_score"].iloc[-3:].mean())
+            gauge_val = (raw_score + 1.0) / 2.0 * 100  # map [-1,1] → [0,100]
+
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=round(gauge_val, 1),
+                delta={"reference": 50, "relative": False,
+                       "increasing": {"color": "#22c55e"},
+                       "decreasing": {"color": "#ef4444"}},
+                gauge={
+                    "axis": {"range": [0, 100], "tickwidth": 1,
+                             "tickcolor": "#475569", "tickfont": {"size": 10}},
+                    "bar": {"color": "#0ea5e9", "thickness": 0.25},
+                    "bgcolor": "rgba(0,0,0,0)",
+                    "borderwidth": 0,
+                    "steps": [
+                        {"range": [0, 30],   "color": "rgba(239,68,68,0.25)"},
+                        {"range": [30, 70],  "color": "rgba(148,163,184,0.10)"},
+                        {"range": [70, 100], "color": "rgba(34,197,94,0.25)"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "#f59e0b", "width": 3},
+                        "thickness": 0.75,
+                        "value": 50,
+                    },
+                },
+                title={"text": "Điểm Dòng Tiền KN (Trung bình 3 phiên)", "font": {"size": 13, "color": "#94a3b8"}},
+                number={"font": {"size": 32, "color": "#e2e8f0"}, "suffix": "/100"},
+            ))
+            fig_gauge.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                height=220, margin=dict(l=20, r=20, t=40, b=10),
+                font={"color": "#e2e8f0"},
+            )
+            st.plotly_chart(fig_gauge, use_container_width=True)
+
+            # Signal label
+            if raw_score > 0.20:
+                sig_color, sig_text = "#22c55e", "🟢 KHỐI NGOẠI ĐANG MUA RÒNG"
+            elif raw_score < -0.20:
+                sig_color, sig_text = "#ef4444", "🔴 KHỐI NGOẠI ĐANG BÁN RÒNG"
+            else:
+                sig_color, sig_text = "#94a3b8", "🟡 TRUNG LẬP"
+            st.markdown(
+                f'<div style="text-align:center;font-size:1.1rem;font-weight:800;'
+                f'color:{sig_color};padding:6px;border-radius:6px;'
+                f'background:rgba(0,0,0,0.3);">{sig_text}</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Bar chart: foreign_net_flow_ratio per session (last 20)
+            if "Date" in flow_df.columns and "foreign_net_flow_ratio" in flow_df.columns:
+                recent = flow_df.tail(20).copy()
+                recent["Date"] = pd.to_datetime(recent["Date"])
+                colors = ["#22c55e" if v >= 0 else "#ef4444"
+                          for v in recent["foreign_net_flow_ratio"]]
+                fig_bar = go.Figure(go.Bar(
+                    x=recent["Date"].dt.strftime("%m/%d"),
+                    y=recent["foreign_net_flow_ratio"],
+                    marker_color=colors,
+                    name="KN Net Flow Ratio",
+                ))
+                fig_bar.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    height=180, margin=dict(l=10, r=10, t=30, b=30),
+                    title={"text": "Tỷ Lệ Mua/Bán Ròng KN (20 phiên gần nhất)", "font": {"size": 12, "color": "#94a3b8"}},
+                    xaxis={"tickfont": {"size": 9, "color": "#64748b"}, "showgrid": False},
+                    yaxis={"tickfont": {"size": 9, "color": "#64748b"}, "gridcolor": "rgba(255,255,255,0.05)"},
+                    font={"color": "#e2e8f0"},
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            # No foreign flow data yet
+            st.info(
+                "Chưa có dữ liệu Khối Ngoại theo từng phiên.\n\n"
+                "Hãy chạy: `python scripts/nightly_foreign_flow_cache.py` sau khi thị trường đóng cửa (18:30 UTC+7) "
+                "để cập nhật dữ liệu KN vào cache Parquet.",
+            )
+            # Hiển thị biến động như thông tin bổ sung khi chưa có dữ liệu KN
+            if not df.empty and "Close" in df.columns:
+                close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+                if len(close) >= 21:
+                    vol = close.pct_change().rolling(20).std().iloc[-1] * (252 ** 0.5) * 100
+                    st.metric("Biến động năm hóa (Ann. Vol)", f"{vol:.1f}%",
+                              help="Mức độ rủi ro biến động giá cổ phiếu (tính trên 20 phiên gần nhất)")
+
+    # ── 5. Position Sizing Section ────────────────────────────────────────────
+    with col_pos:
+        st.markdown("#### 💰 Khuyến Nghị Giải Ngân")
+
+        # Nhập tổng vốn đầu tư
+        portfolio_vnd = st.number_input(
+            "Tổng vốn đầu tư (VND)",
+            min_value=10_000_000,
+            max_value=100_000_000_000,
+            value=st.session_state.get("portfolio_value_vnd", 1_000_000_000),
+            step=100_000_000,
+            format="%d",
+            key="portfolio_value_vnd",
+            help="Nhập tổng vốn để tính số lượng cổ phiếu và số tiền khuyến nghị",
+        )
+        # Recalculate if portfolio changes
+        if portfolio_vnd != pos.get("_portfolio", portfolio_vnd):
+            try:
+                from src.analytics.position_sizer import compute_position_size
+                current_price = float(df["Close"].iloc[-1]) if not df.empty else 0
+                pos = compute_position_size(
+                    symbol=symbol,
+                    current_price=current_price,
+                    mid_rating=mid_rating,
+                    short_rating=short_rating,
+                    df_price=df,
+                    portfolio_value_vnd=portfolio_vnd,
+                )
+            except Exception:
+                pass
+
+        alloc_pct  = pos["recommended_allocation_pct"]
+        amount_m   = pos["recommended_vnd_million"]
+        shares     = pos["recommended_shares"]
+        stop_pct   = pos["stop_loss_pct"]
+        risk_level = pos["risk_level"]
+        ann_vol    = pos["annualized_vol_pct"]
+        basis      = pos["sizing_basis"]
+        notes      = pos.get("notes", "")
+
+        # Màu theo mức độ rủi ro
+        _risk_label_vi = {"Low": "Thấp", "Medium": "Trung bình", "High": "Cao", "Avoid": "Tránh", "N/A": "N/A"}
+        risk_color = {"Low": "#22c55e", "Medium": "#f59e0b",
+                      "High": "#ef4444", "Avoid": "#64748b", "N/A": "#64748b"}.get(risk_level, "#94a3b8")
+        alloc_color = "#22c55e" if alloc_pct >= 25 else "#f59e0b" if alloc_pct >= 10 else "#64748b"
+        _basis_vi = {"Mid-term": "Trung hạn", "Short-term": "Ngắn hạn", "Avoid": "Không khuyến nghị"}.get(basis, basis)
+
+        # Thẻ tỷ trọng chính
+        st.markdown(
+            f'<div style="background:rgba(0,0,0,0.4);border:2px solid {alloc_color};'
+            f'border-radius:12px;padding:20px;margin-bottom:12px;text-align:center;">'
+            f'<div style="font-size:0.7rem;color:#94a3b8;letter-spacing:2px;">TỶ TRỌNG KHUYẾN NGHỊ</div>'
+            f'<div style="font-size:3.5rem;font-weight:900;color:{alloc_color};">{alloc_pct:.0f}%</div>'
+            f'<div style="font-size:0.9rem;color:#e2e8f0;">Cơ sở: {_basis_vi}</div>'
+            f'<div style="font-size:0.7rem;color:#64748b;margin-top:4px;">{notes}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Chỉ số chi tiết
+        m1, m2 = st.columns(2)
+        m1.metric("Số tiền (triệu VND)", f"{amount_m:,.0f}")
+        m2.metric("Số cổ phiếu (lô 100)", f"{shares:,}")
+
+        m3, m4 = st.columns(2)
+        m3.metric("Dừng lỗ khuyến nghị", f"{stop_pct:.1f}%")
+        m4.metric("Rủi ro", _risk_label_vi.get(risk_level, risk_level),
+                  delta=f"Biến động {ann_vol:.0f}%",
+                  delta_color="inverse" if risk_level in ("High", "Avoid") else "normal")
+
+        # Guidance text
+        if alloc_pct > 0:
+            current_price_str = f"{df['Close'].iloc[-1]:,.0f}" if not df.empty else "N/A"
+            stop_price_vnd = float(df["Close"].iloc[-1]) * (1 - stop_pct / 100) if not df.empty else 0
+            st.markdown(
+                f'<div style="background:rgba(14,165,233,0.06);border-left:3px solid #0ea5e9;'
+                f'padding:12px;border-radius:6px;font-size:0.8rem;color:#cbd5e1;">'
+                f'<b>Giá hiện tại:</b> {current_price_str} VND<br>'
+                f'<b>Dừng lỗ (~{stop_pct:.1f}%):</b> {stop_price_vnd:,.0f} VND<br>'
+                f'<b>Chiến lược:</b> Giải ngân {alloc_pct:.0f}% vốn ({amount_m:,.0f} triệu VND) '
+                f'→ {shares:,} cổ phiếu (lô 100 cp). '
+                f'Đặt dừng lỗ {stop_pct:.1f}% để bảo vệ vốn.<br>'
+                f'<br><b>Lưu ý:</b> Đây là khuyến nghị định lượng tự động. '
+                f'Kết hợp với phân tích kỹ thuật trước khi quyết định.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.warning("Hệ thống không khuyến nghị giải ngân tại thời điểm này theo Rating hiện tại.")
+
+        st.caption(
+            f"Công thức: Rating → Tỷ trọng gốc → Điều chỉnh ATR (biến động {ann_vol:.0f}%) → Tỷ trọng cuối. "
+            f"Danh mục mặc định: 1 tỷ VND. Thay đổi ở ô nhập bên trên."
+        )
+
