@@ -71,7 +71,18 @@ class FundamentalScore:
 
 def _to_yf_ticker(symbol: str, market: str) -> str:
     if market == "VN":
-        return f"{symbol}.VN"
+        base_symbol = symbol.replace('.VN', '').upper()
+        return f"{base_symbol}.VN"
+    elif market == "TW":
+        base_symbol = symbol.replace('.TW', '').replace('.TWO', '').upper()
+        try:
+            from src.plugins.taiwan import TAIWAN_STOCKS
+            for curated_symbol in TAIWAN_STOCKS:
+                if curated_symbol.replace('.TW', '').replace('.TWO', '').upper() == base_symbol:
+                    return curated_symbol
+        except Exception:
+            pass
+        return f"{base_symbol}.TW"
     return symbol
 
 
@@ -97,14 +108,28 @@ def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
     }
     
     import time
+    import io
+    import contextlib
+
+    def _safe_err(e: Exception) -> str:
+        try:
+            return str(e).encode("ascii", errors="ignore").decode("ascii") or e.__class__.__name__
+        except Exception:
+            return e.__class__.__name__
+
     for attempt in range(3):
         try:
             from vnstock import Vnstock
             import pandas as pd
-            stock = Vnstock().stock(symbol=base_symbol, source="VCI")
-            inc = stock.finance.income_statement(period="quarter", lang="vi")
-            bs = stock.finance.balance_sheet(period="quarter", lang="vi")
-            cf = stock.finance.cash_flow(period="quarter", lang="vi")
+            
+            # Temporarily redirect stdout/stderr to suppress vnstock banner print and avoid UnicodeEncodeError on Windows
+            f_out = io.StringIO()
+            f_err = io.StringIO()
+            with contextlib.redirect_stdout(f_out), contextlib.redirect_stderr(f_err):
+                stock = Vnstock().stock(symbol=base_symbol, source="VCI")
+                inc = stock.finance.income_statement(period="quarter", lang="vi")
+                bs = stock.finance.balance_sheet(period="quarter", lang="vi")
+                cf = stock.finance.cash_flow(period="quarter", lang="vi")
             
             # Verify we got valid dataframes (not empty/None)
             if inc is not None and not inc.empty and bs is not None and not bs.empty and cf is not None and not cf.empty:
@@ -112,11 +137,11 @@ def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
             else:
                 raise ValueError("One or more financial statements returned empty")
         except BaseException as e:
-            err_str = str(e) or e.__class__.__name__
+            err_str = _safe_err(e)
             logger.warning(f"Attempt {attempt+1} failed for {base_symbol} (possibly rate limit/blocked): {err_str}")
             if attempt < 2:
-                logger.info("Waiting 45 seconds to reset rate limit...")
-                time.sleep(45)
+                logger.info("Waiting 15 seconds to reset rate limit...")
+                time.sleep(15)
             else:
                 return data
 

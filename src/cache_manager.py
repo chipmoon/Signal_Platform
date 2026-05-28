@@ -217,17 +217,18 @@ class CacheManager:
         """Cache fundamental data for a symbol as JSON."""
         fundamentals_dir = self.cache_dir / "fundamentals"
         fundamentals_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = symbol.replace(".", "_").replace("=", "_").replace("-", "_")
+        clean_symbol = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").upper()
+        safe_name = clean_symbol.replace(".", "_").replace("=", "_").replace("-", "_")
         path = fundamentals_dir / f"{safe_name}_{market}.json"
         
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
         
-        key = f"fundamentals_{symbol}_{market}"
+        key = f"fundamentals_{clean_symbol}_{market}"
         self._meta[key] = {
             "updated": datetime.now().isoformat(),
         }
         self._save_meta()
-        logger.info(f"Cached fundamentals for {symbol} ({market})")
+        logger.info(f"Cached fundamentals for {clean_symbol} ({market})")
 
     def get_cached_fundamentals(
         self, symbol: str, market: str, max_age_hours: int = 168
@@ -236,13 +237,14 @@ class CacheManager:
         Get cached fundamental data if it exists and is fresh.
         Default max age is 7 days since fundamentals change slowly.
         """
-        safe_name = symbol.replace(".", "_").replace("=", "_").replace("-", "_")
+        clean_symbol = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").upper()
+        safe_name = clean_symbol.replace(".", "_").replace("=", "_").replace("-", "_")
         path = self.cache_dir / "fundamentals" / f"{safe_name}_{market}.json"
         
         if not path.exists():
             return None
             
-        key = f"fundamentals_{symbol}_{market}"
+        key = f"fundamentals_{clean_symbol}_{market}"
         meta = self._meta.get(key, {})
         if meta:
             try:

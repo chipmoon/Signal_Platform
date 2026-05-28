@@ -1,1 +1,1 @@
-Force redeploy: 2026-05-28 19:23:52 — Elliott Wave tiered UI + Fibonacci + Entry Zone + Time Estimate
+Force redeploy: 2026-05-28 19:25 — Full sync: 74 TW + VN fundamentals, flow caches, scanner, all source
