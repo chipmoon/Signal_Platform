@@ -2943,6 +2943,16 @@ def _render_mtf_panel(mtf_state: dict) -> None:
 def _render_elliott_wave_panel(ew_state: dict) -> None:
     if not ew_state:
         return
+    try:
+        _render_elliott_wave_panel_inner(ew_state)
+    except Exception as _ew_err:
+        import traceback
+        with st.expander("🌊 Elliott Wave — (lỗi hiển thị)", expanded=False):
+            st.warning(f"Elliott Wave panel error: {_ew_err}")
+            st.caption(traceback.format_exc()[-400:])
+
+
+def _render_elliott_wave_panel_inner(ew_state: dict) -> None:
     wave        = ew_state.get("current_wave", "?")
     bias        = ew_state.get("bias", "Neutral")
     pattern     = ew_state.get("pattern", "Unknown")
@@ -3076,8 +3086,9 @@ def _render_elliott_wave_panel(ew_state: dict) -> None:
                 is_star = "★" in lbl
                 fc = "#22c55e" if is_star else "#e2e8f0"
                 fw = "800" if is_star else "400"
+                border_opacity = "0.12" if is_star else "0.05"  # avoid nested quote in f-string
                 fib_html += (
-                    f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,{"0.12" if is_star else "0.05"});'
+                    f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,{border_opacity});'
                     f'border-radius:6px;padding:8px 10px;">'
                     f'<div style="font-size:0.68rem;color:#64748b;">{lbl}</div>'
                     f'<div style="font-size:1.1rem;font-weight:{fw};color:{fc};">{price:,.2f}</div>'
