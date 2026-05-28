@@ -1,1 +1,1 @@
-Force redeploy: 2026-05-28 19:37 — fix Elliott Wave panel hidden bug (nested f-string crash)
+Force redeploy: 2026-05-28 19:47 — Elliott Wave 3-tier fallback: yfinance -> parquet cache -> df_train resample; always-visible panel

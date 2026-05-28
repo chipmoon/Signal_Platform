@@ -2187,42 +2187,77 @@ def render():
             logger.debug(f"MTF confluence failed: {_e}")
 
     # ── Phase 2: Elliott Wave (Weekly strategic context) ─────────────────────
+    # 3-tier fallback: (1) yfinance → (2) local parquet cache → (3) df_train resample
     ew_state = {}
     if _EW_AVAILABLE:
+        _df_wk_ew = pd.DataFrame()
+
+        # Tier 1: yfinance (may be blocked on Cloud)
         try:
             import yfinance as _yf
             _yf_sym = f"{symbol}.VN" if market == "VN" else symbol
-            _df_wk = _yf.Ticker(_yf_sym).history(period="2y", interval="1wk", auto_adjust=True)
-            
-            # Fallback for VN stocks if yfinance is blocked/empty
-            if _df_wk.empty and market == "VN":
+            _hist = _yf.Ticker(_yf_sym).history(period="2y", interval="1wk", auto_adjust=True)
+            if not _hist.empty:
+                _df_wk_ew = _hist.reset_index()
+                _df_wk_ew.columns = [str(c) for c in _df_wk_ew.columns]
+        except Exception:
+            pass
+
+        # Tier 2: local parquet cache (committed to GitHub — always available on Cloud)
+        if _df_wk_ew.empty:
+            try:
                 from pathlib import Path
-                _cache_p = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{symbol}_VN.parquet"
+                _suffix = "VN" if market == "VN" else "TW"
+                _sym_base = symbol.replace(".TW", "").replace(".TWO", "")
+                _cache_p = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{_sym_base}_{_suffix}.parquet"
                 if _cache_p.exists():
                     _df_daily = pd.read_parquet(_cache_p, engine="pyarrow")
                     if not _df_daily.empty:
+                        # Normalize column names
                         _col_map = {c: c.capitalize() for c in _df_daily.columns}
-                        _col_map.update({"Adj close": "Close", "Adj Close": "Close"})
+                        _col_map.update({"Adj close": "Close", "Adj Close": "Close",
+                                         "date": "Date", "Date": "Date"})
                         _df_daily = _df_daily.rename(columns=_col_map)
-                        if "Date" in _df_daily.columns:
-                            _df_daily["Date"] = pd.to_datetime(_df_daily["Date"])
-                            _df_daily = _df_daily.sort_values("Date")
-                            _df_daily.set_index("Date", inplace=True)
-                            _df_wk = _df_daily.resample("W").agg({
-                                "Open": "first",
-                                "High": "max",
-                                "Low": "min",
-                                "Close": "last",
-                                "Volume": "sum"
-                            }).dropna().reset_index()
-                            print(f"Elliott Wave: Resampled {symbol} daily cache to weekly ({len(_df_wk)} rows)")
+                        _date_col = "Date" if "Date" in _df_daily.columns else _df_daily.columns[0]
+                        _df_daily[_date_col] = pd.to_datetime(_df_daily[_date_col])
+                        _df_daily = _df_daily.set_index(_date_col).sort_index()
+                        _agg_cols = {c: ("first" if c == "Open" else ("max" if c == "High" else
+                                         ("min" if c == "Low" else ("last" if c == "Close" else "sum"))))
+                                     for c in ["Open", "High", "Low", "Close", "Volume"]
+                                     if c in _df_daily.columns}
+                        _df_wk_ew = _df_daily.resample("W").agg(_agg_cols).dropna().reset_index()
+                        _df_wk_ew.columns = [str(c) for c in _df_wk_ew.columns]
+            except Exception:
+                pass
 
-            if not _df_wk.empty:
-                _df_wk = _df_wk.reset_index()
-                _df_wk.columns = [str(c) for c in _df_wk.columns]
-                ew_state = ElliottWaveAnalyzer().get_current_state(_df_wk)
-        except Exception as _e:
-            logger.debug(f"Elliott Wave failed: {_e}")
+        # Tier 3: df_train resample (always available — last resort)
+        if _df_wk_ew.empty and not df_train.empty:
+            try:
+                _df_src = df_train.copy()
+                if "Date" in _df_src.columns:
+                    _df_src = _df_src.set_index(pd.to_datetime(_df_src["Date"])).drop(columns="Date")
+                elif not isinstance(_df_src.index, pd.DatetimeIndex):
+                    _df_src.index = pd.to_datetime(_df_src.index)
+                _col_map2 = {c: c.capitalize() for c in _df_src.columns}
+                _df_src = _df_src.rename(columns=_col_map2)
+                _agg2 = {c: ("first" if c == "Open" else ("max" if c == "High" else
+                              ("min" if c == "Low" else ("last" if c == "Close" else "sum"))))
+                         for c in ["Open", "High", "Low", "Close", "Volume"]
+                         if c in _df_src.columns}
+                _df_wk_ew = _df_src.resample("W").agg(_agg2).dropna().reset_index()
+                _df_wk_ew.columns = [str(c) for c in _df_wk_ew.columns]
+            except Exception:
+                pass
+
+        # Run Elliott Wave on whatever data we have
+        if not _df_wk_ew.empty:
+            try:
+                ew_state = ElliottWaveAnalyzer().get_current_state(_df_wk_ew)
+            except Exception as _e:
+                logger.debug(f"Elliott Wave analysis failed: {_e}")
+                ew_state = {"_error": str(_e)}  # non-empty so panel renders error msg
+        else:
+            ew_state = {"_no_data": True}  # non-empty so panel shows unavailable msg
 
     # ── Phase 3: Fundamental Quality Score ──────────────────────────────────
     fund_state = {}
@@ -2941,7 +2976,21 @@ def _render_mtf_panel(mtf_state: dict) -> None:
 
 
 def _render_elliott_wave_panel(ew_state: dict) -> None:
-    if not ew_state:
+    """Always renders the Elliott Wave expander, even when data is unavailable."""
+    # Handle special sentinel states — show panel with diagnostic info
+    if not ew_state or ew_state.get("_no_data"):
+        with st.expander("🌊 Elliott Wave — Không có dữ liệu tuần", expanded=False):
+            st.markdown(
+                '<div style="background:rgba(71,85,105,0.15);border-left:3px solid #475569;'
+                'padding:10px 12px;border-radius:6px;font-size:0.78rem;color:#94a3b8;">'
+                '⚠️ Dữ liệu giá tuần không khả dụng — có thể do IP block trên Cloud hoặc cổ phiếu chưa có cache.<br>'
+                '<b>Bước khắc phục:</b> Chạy <code>nightly_taiwan_flow_cache.py</code> hoặc <code>nightly_foreign_flow_cache.py</code> '
+                'để tạo cache giá trước.</div>',
+                unsafe_allow_html=True)
+        return
+    if ew_state.get("_error"):
+        with st.expander("🌊 Elliott Wave — Lỗi phân tích", expanded=False):
+            st.warning(f"⚠️ Lỗi: {ew_state['_error']}")
         return
     try:
         _render_elliott_wave_panel_inner(ew_state)
