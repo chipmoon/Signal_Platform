@@ -2943,41 +2943,178 @@ def _render_mtf_panel(mtf_state: dict) -> None:
 def _render_elliott_wave_panel(ew_state: dict) -> None:
     if not ew_state:
         return
-    wave = ew_state.get("current_wave", "?")
-    bias = ew_state.get("bias", "Neutral")
-    pattern = ew_state.get("pattern", "Unknown")
-    target = ew_state.get("target_price", 0)
-    target_label = ew_state.get("target_label", "")
+    wave        = ew_state.get("current_wave", "?")
+    bias        = ew_state.get("bias", "Neutral")
+    pattern     = ew_state.get("pattern", "Unknown")
+    target      = ew_state.get("target_price", 0)
+    target_lbl  = ew_state.get("target_label", "")
     invalidation = ew_state.get("invalidation", 0)
-    confidence = ew_state.get("confidence", 0)
-    notes = ew_state.get("notes", "")
-    violations = ew_state.get("rules_violated", [])
+    confidence  = ew_state.get("confidence", 0)
+    notes       = ew_state.get("notes", "")
+    violations  = ew_state.get("rules_violated", [])
+    fib_levels  = ew_state.get("fib_levels", {})
+    entry_lo    = ew_state.get("entry_zone_low", 0)
+    entry_hi    = ew_state.get("entry_zone_high", 0)
+    est_bars    = ew_state.get("estimated_bars_remaining", 0)
+    time_basis  = ew_state.get("wave_duration_basis", "")
+
+    # ── Tier classification ────────────────────────────────────────────────────
+    is_invalid   = len(violations) > 0           # P0: any rule violation → downgrade
+    is_actionable = confidence >= 75 and not is_invalid  # P1: full display
+    is_strategic  = 60 <= confidence < 75 and not is_invalid   # P1: partial display
+
     icon = "🟢" if "Bullish" in bias else ("🔴" if "Bearish" in bias else "⚪")
-    conf_color = "#22c55e" if confidence >= 60 else ("#f59e0b" if confidence >= 40 else "#ef4444")
-    with st.expander(f"🌊 Elliott Wave — Wave {wave} ({pattern})", expanded=False):
+    conf_color = "#22c55e" if confidence >= 75 else ("#f59e0b" if confidence >= 60 else "#ef4444")
+
+    # Wave-specific interpretation text (always useful context)
+    _wave_context = {
+        "1": "📌 Wave 1: Khởi đầu xu hướng. Volume thường thấp, nhiều người không nhận ra. Giữ vị thế, không vào mạnh.",
+        "2": "⏳ Wave 2: Điều chỉnh của Wave 1. Vùng tích lũy — cơ hội mua nếu giữ trên đáy Wave 1.",
+        "3": "🚀 Wave 3: Sóng mạnh nhất và dài nhất. Breakout xác nhận, volume tăng. Đây là sóng để giải ngân lớn.",
+        "4": "⏳ Wave 4: Điều chỉnh nhẹ trước sóng cuối. KHÔNG được lấp vùng giá Wave 1. Tích lũy nhẹ nếu hỗ trợ vững.",
+        "5": "⚠️ Wave 5: Sóng cuối cùng. Momentum yếu dần, RSI phân kỳ. KHÔNG nên mua thêm — chuẩn bị chốt lời.",
+        "A": "📉 Wave A: Bắt đầu điều chỉnh sau impulse. Nhiều người nghĩ đây là hồi phục — cẩn thận.",
+        "B": "🔄 Wave B: Hồi phục kỹ thuật của ABC. Bẫy tăng — thường thất bại ở mức cũ.",
+        "C": "📉 Wave C: Đáy điều chỉnh ABC. Thường bằng hoặc dài hơn Wave A. Vùng mua tiềm năng nếu xu hướng lớn còn bullish.",
+    }
+    wave_hint = _wave_context.get(wave, "")
+
+    expander_label = f"🌊 Elliott Wave — Wave {wave} ({pattern})"
+    if is_invalid:
+        expander_label += "  ❌ INVALID COUNT"
+    elif is_actionable:
+        expander_label += "  ✅ High Confidence"
+    elif is_strategic:
+        expander_label += "  ⚠️ Strategic Only"
+
+    with st.expander(expander_label, expanded=False):
+
+        # ── TIER 0: INVALID — muted, only show Invalidation ──────────────────
+        if is_invalid:
+            st.markdown(
+                f'<div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);'
+                f'border-radius:8px;padding:14px;margin-bottom:10px;">'
+                f'<div style="font-size:0.75rem;color:#ef4444;font-weight:700;letter-spacing:1px;">❌ WAVE COUNT KHÔNG HỢP LỆ</div>'
+                f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:6px;">'
+                f'Vi phạm quy tắc Elliott cơ bản — kết quả phân tích không đáng tin cậy.<br>'
+                f'Chỉ sử dụng ngưỡng <b style="color:#f59e0b;">Invalidation</b> làm mức rủi ro.</div>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+            for v in violations:
+                st.warning(f"⚠️ {v}")
+
+            # Still show Invalidation — it's the only useful piece
+            if invalidation > 0:
+                st.markdown(
+                    f'<div style="background:rgba(245,158,11,0.08);border-left:4px solid #f59e0b;'
+                    f'padding:12px;border-radius:6px;margin-top:8px;">'
+                    f'<div style="font-size:0.7rem;color:#94a3b8;">🛑 Mức Invalidation (Phủ định Wave count)</div>'
+                    f'<div style="font-size:1.6rem;font-weight:900;color:#f59e0b;">{invalidation:,.2f}</div>'
+                    f'<div style="font-size:0.72rem;color:#94a3b8;">Nếu giá đóng cửa vượt mức này → wave count bị phủ định hoàn toàn</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div style="font-size:0.7rem;color:#475569;margin-top:8px;">'
+                f'Wave {wave} | Confidence: {confidence}% | Strategic context only</div>',
+                unsafe_allow_html=True)
+            return
+
+        # ── TIER 1 & 2: Valid count — show wave header ───────────────────────
         c1, c2 = st.columns(2)
         with c1:
             st.markdown(
                 f'<div style="background:rgba(102,126,234,0.08);border-left:3px solid #667eea;padding:12px;border-radius:6px;">'
-                f'<div style="font-size:0.75rem;color:#94a3b8;">Current Wave (Weekly)</div>'
+                f'<div style="font-size:0.72rem;color:#94a3b8;">Current Wave (Weekly)</div>'
                 f'<div style="font-size:2rem;font-weight:900;color:#667eea;">{icon} Wave {wave}</div>'
-                f'<div style="font-size:0.85rem;color:#e2e8f0;">{pattern}</div>'
-                f'<div style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">{notes}</div></div>',
-                unsafe_allow_html=True)
+                f'<div style="font-size:0.82rem;color:#e2e8f0;">{pattern}</div>'
+                f'<div style="font-size:0.7rem;color:#94a3b8;margin-top:4px;">{notes}</div>'
+                f'</div>', unsafe_allow_html=True)
         with c2:
             if target > 0:
-                inv_html = (f'<div style="font-size:0.7rem;color:#ef4444;margin-top:6px;">Invalidation: {invalidation:,.2f}</div>'
-                            if invalidation > 0 else '')
+                tier_border = "#22c55e" if is_actionable else "#f59e0b"
+                tier_label  = "Fibonacci Target ✅" if is_actionable else "Fibonacci Target ⚠️"
                 st.markdown(
-                    f'<div style="background:rgba(34,197,94,0.08);border-left:3px solid #22c55e;padding:12px;border-radius:6px;">'
-                    f'<div style="font-size:0.75rem;color:#94a3b8;">Fibonacci Target</div>'
-                    f'<div style="font-size:1.3rem;font-weight:700;color:#22c55e;">{target:,.2f}</div>'
-                    f'<div style="font-size:0.7rem;color:#94a3b8;">{target_label}</div>'
-                    + inv_html + f'</div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="font-size:0.75rem;color:{conf_color};margin-top:8px;">Confidence: {confidence}% | Strategic context only</div>',
-                    unsafe_allow_html=True)
-        for v in violations:
-            st.warning(f"⚠️ {v}")
+                    f'<div style="background:rgba(34,197,94,0.07);border-left:3px solid {tier_border};padding:12px;border-radius:6px;">'
+                    f'<div style="font-size:0.72rem;color:#94a3b8;">{tier_label}</div>'
+                    f'<div style="font-size:1.5rem;font-weight:800;color:{tier_border};">{target:,.2f}</div>'
+                    f'<div style="font-size:0.7rem;color:#94a3b8;">{target_lbl}</div>'
+                    + (f'<div style="font-size:0.68rem;color:#ef4444;margin-top:4px;">🛑 Invalidation: {invalidation:,.2f}</div>' if invalidation > 0 else '')
+                    + f'</div>', unsafe_allow_html=True)
+
+        # Confidence bar
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;">'
+            f'<div style="flex:1;background:rgba(255,255,255,0.05);border-radius:4px;height:6px;">'
+            f'<div style="width:{confidence}%;background:{conf_color};height:6px;border-radius:4px;"></div></div>'
+            f'<span style="font-size:0.72rem;color:{conf_color};white-space:nowrap;">'
+            f'{"✅ Actionable" if is_actionable else "⚠️ Strategic only"} | {confidence}%</span>'
+            f'</div>', unsafe_allow_html=True)
+
+        # Wave context hint
+        if wave_hint:
+            st.markdown(
+                f'<div style="background:rgba(102,126,234,0.05);border-left:2px solid #475569;'
+                f'padding:8px 10px;border-radius:4px;font-size:0.75rem;color:#94a3b8;margin-bottom:8px;">'
+                f'{wave_hint}</div>', unsafe_allow_html=True)
+
+        # ── TIER 2 (STRATEGIC) stops here ────────────────────────────────────
+        if is_strategic:
+            st.caption("⚠️ Confidence 60–74%: Chỉ dùng làm bối cảnh chiến lược. Cần xác nhận từ Wyckoff + SMC trước khi hành động.")
+            return
+
+        # ── TIER 1 (ACTIONABLE ≥75%): Full information display ───────────────
+        st.markdown("---")
+
+        # Row A: Fibonacci Levels table
+        if fib_levels:
+            st.markdown(
+                '<div style="font-size:0.75rem;color:#94a3b8;font-weight:600;margin-bottom:6px;">📐 Fibonacci Levels chi tiết</div>',
+                unsafe_allow_html=True)
+            fib_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">'
+            for lbl, price in fib_levels.items():
+                is_star = "★" in lbl
+                fc = "#22c55e" if is_star else "#e2e8f0"
+                fw = "800" if is_star else "400"
+                fib_html += (
+                    f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,{"0.12" if is_star else "0.05"});'
+                    f'border-radius:6px;padding:8px 10px;">'
+                    f'<div style="font-size:0.68rem;color:#64748b;">{lbl}</div>'
+                    f'<div style="font-size:1.1rem;font-weight:{fw};color:{fc};">{price:,.2f}</div>'
+                    f'</div>'
+                )
+            fib_html += '</div>'
+            st.markdown(fib_html, unsafe_allow_html=True)
+
+        # Row B: Entry Zone
+        if entry_lo > 0 and entry_hi > 0:
+            st.markdown(
+                f'<div style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.2);'
+                f'border-radius:8px;padding:12px;margin-top:10px;">'
+                f'<div style="font-size:0.72rem;color:#0ea5e9;font-weight:700;">🎯 Entry Zone (Vùng Mua Lại Tối Ưu)</div>'
+                f'<div style="font-size:1.1rem;font-weight:800;color:#e2e8f0;margin-top:4px;">'
+                f'{entry_lo:,.2f} – {entry_hi:,.2f}</div>'
+                f'<div style="font-size:0.7rem;color:#64748b;margin-top:2px;">'
+                f'Vùng mua sau điều chỉnh ABC (Fib 61.8%–38.2% của toàn bộ sóng impulse)</div>'
+                f'</div>', unsafe_allow_html=True)
+
+        # Row C: Time Estimate
+        if est_bars > 0 and time_basis:
+            week_label = "tuần" if est_bars <= 52 else "tuần (~{:.0f} tháng)".format(est_bars / 4.3)
+            st.markdown(
+                f'<div style="background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.15);'
+                f'border-radius:8px;padding:12px;margin-top:8px;">'
+                f'<div style="font-size:0.72rem;color:#a855f7;font-weight:700;">⏱️ Ước tính thời gian</div>'
+                f'<div style="font-size:1.2rem;font-weight:800;color:#e2e8f0;margin-top:4px;">~{est_bars} {week_label} còn lại</div>'
+                f'<div style="font-size:0.68rem;color:#64748b;margin-top:2px;">{time_basis}</div>'
+                f'</div>', unsafe_allow_html=True)
+        elif est_bars == 0 and time_basis:
+            st.markdown(
+                f'<div style="background:rgba(239,68,68,0.06);border-left:3px solid #ef4444;'
+                f'padding:8px 10px;border-radius:4px;margin-top:8px;font-size:0.75rem;color:#fca5a5;">'
+                f'⏰ {time_basis} — Sóng có thể đã hoàn thành hoặc gần đỉnh.</div>',
+                unsafe_allow_html=True)
+
 
 
 def _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state, fund_state):

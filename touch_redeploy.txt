@@ -1,1 +1,1 @@
-Force redeploy trigger: 2026-05-28 07:14:10 UTC+8 â€” NTD/VND currency fix + 13 TW flow caches uploaded
+Force redeploy: 2026-05-28 19:23:52 — Elliott Wave tiered UI + Fibonacci + Entry Zone + Time Estimate
