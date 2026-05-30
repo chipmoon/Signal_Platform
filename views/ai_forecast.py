@@ -65,6 +65,28 @@ except ImportError:
     _GEMINI_AVAILABLE = False
 
 
+
+def _format_price(price: float, symbol: str = "", market: str = "") -> str:
+    """Format price nicely based on the symbol and market."""
+    if not symbol:
+        symbol = st.session_state.get("global_symbol", "")
+    if not market:
+        market = st.session_state.get("global_market", "")
+        
+    symbol_upper = str(symbol).upper()
+    market_upper = str(market).upper()
+    
+    is_tw = symbol_upper.endswith(".TW") or symbol_upper.endswith(".TWO") or market_upper == "TW" or market_upper == "TAIWAN"
+    is_vn = symbol_upper.endswith(".VN") or market_upper == "VN" or market_upper == "VIETNAM" or market_upper == "VN_STOCK"
+    
+    if is_tw:
+        return f"{price:,.2f} NTD"
+    elif is_vn:
+        return f"{price:,.2f} VND"
+    else:
+        return f"${price:,.2f}"
+
+
 def _get_mozyfin_client():
     """Get Mozyfin client, returns None if API key not configured."""
     if not _MOZYFIN_AVAILABLE:
@@ -796,12 +818,17 @@ def _render_wyckoff_panel(df: pd.DataFrame):
             return {}
 
 
-def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict, predictions: dict, scalp_intel: dict = None):
+def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict, predictions: dict, scalp_intel: dict = None, symbol: str = "", market: str = ""):
     """Render the Unified Professional Execution Panel (Strategic Hub Roadmap)."""
     p1 = predictions.get(1, {})
     p63 = predictions.get(63, {})
     daily_bias = p1.get("bias", "🟡 NEUTRAL")
     lt_bias = p63.get("bias", "🟡 NEUTRAL")
+    
+    def fmt(val):
+        if val is None:
+            return "N/A"
+        return _format_price(val, symbol, market)
     
     # MTF CONFLUENCE LOGIC:
     # 1. Start with H4 Structure (HTF)
@@ -937,7 +964,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'    <div style="font-size:0.65rem; color:#94a3b8; text-transform:uppercase; letter-spacing:1px;">Market Price'
                 f'      <span style="color:#667eea; font-size:0.5rem; margin-left:4px;">{live_indicator}</span>'
                 f'    </div>'
-                f'    <div style="font-size:1.6rem; font-weight:900; color:#fff; font-family:monospace;">${curr_price:,.2f}</div>'
+                f'    <div style="font-size:1.6rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(curr_price)}</div>'
                 f'    {change_html}'
                 f'  </div>'
                 f'  <div style="border-top:1px dashed rgba(255,255,255,0.1); padding-top:12px;">'
@@ -970,7 +997,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 ui_html += (
                     f'<div style="background:rgba(255,215,0,0.05); border:1px solid rgba(255,215,0,0.2); border-radius:8px; padding:10px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">'
                     f'  <div style="color:#ffd700; font-size:0.65rem; font-weight:800; letter-spacing:1px;">⚡ PHASE 0: EARLY (SL to Entry @70%)</div>'
-                    f'  <div style="font-size:1.1rem; font-weight:900; color:#fff; font-family:monospace;">${s0:,.2f}</div>'
+                    f'  <div style="font-size:1.1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(s0)}</div>'
                     f'</div>'
                 )
 
@@ -978,11 +1005,11 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'<div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:15px;">'
                 f'  <div style="background:linear-gradient(to bottom, rgba(102,126,234,0.1), rgba(102,126,234,0.02)); border:1px solid rgba(102,126,234,0.2); border-radius:8px; padding:12px 5px; text-align:center;">'
                 f'    <div style="font-size:0.6rem; color:#667eea; margin-bottom:4px; font-weight:800; text-transform:uppercase;">Phase 1: Struct</div>'
-                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">${s1:,.2f}</div>'
+                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(s1)}</div>'
                 f'  </div>'
                 f'  <div style="background:linear-gradient(to bottom, rgba(183,148,244,0.1), rgba(183,148,244,0.02)); border:1px solid rgba(183,148,244,0.2); border-radius:8px; padding:12px 5px; text-align:center;">'
                 f'    <div style="font-size:0.6rem; color:#b794f4; margin-bottom:4px; font-weight:800; text-transform:uppercase;">Phase 2: Goal</div>'
-                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">${s2:,.2f}</div>'
+                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(s2)}</div>'
                 f'  </div>'
                 f'</div>'
                 f'<div style="font-size:0.6rem; color:#94a3b8; margin: -5px 0 15px 0; display:flex; justify-content:space-between; opacity:0.8;">'
@@ -998,11 +1025,11 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'<div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:15px;">'
                 f'  <div style="background:linear-gradient(to bottom, rgba(255,82,82,0.1), rgba(255,82,82,0.02)); border:1px solid rgba(255,82,82,0.15); border-radius:8px; padding:12px 5px; text-align:center;">'
                 f'    <div style="font-size:0.65rem; color:#FF5252; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">STOP LOSS</div>'
-                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">${sl_price:,.2f}</div>'
+                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(sl_price)}</div>'
                 f'  </div>'
                 f'  <div style="background:linear-gradient(to bottom, rgba(0,230,118,0.1), rgba(0,230,118,0.02)); border:1px solid rgba(0,230,118,0.15); border-radius:8px; padding:12px 5px; text-align:center;">'
                 f'    <div style="font-size:0.65rem; color:#00E676; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">TAKE PROFIT (MAX)</div>'
-                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">${tp_price:,.2f}</div>'
+                f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(tp_price)}</div>'
                 f'  </div>'
                 f'</div>'
                 f'<div style="font-size:0.7rem; color:#94a3b8; font-style:italic; text-align:center; opacity:0.7;">STRICT MTF: HTF {h4_health} ➔ LTF {daily_bias}</div>'
@@ -1013,9 +1040,9 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             # Key Levels
             _render_html(f"""
             <div style="display:flex; justify-content:space-around; background:rgba(0,0,0,0.2); padding:10px; border-radius:8px; margin-top:-10px; border:1px solid rgba(255,255,255,0.05);">
-                <div style="text-align:center;"><small style="color:#94a3b8">VAL</small><br><b>${val:,.1f}</b></div>
-                <div style="text-align:center;"><small style="color:#94a3b8">POC</small><br><b style="color:#667eea">${poc:,.1f}</b></div>
-                <div style="text-align:center;"><small style="color:#94a3b8">VAH</small><br><b>${vah:,.1f}</b></div>
+                <div style="text-align:center;"><small style="color:#94a3b8">VAL</small><br><b>{fmt(val)}</b></div>
+                <div style="text-align:center;"><small style="color:#94a3b8">POC</small><br><b style="color:#667eea">{fmt(poc)}</b></div>
+                <div style="text-align:center;"><small style="color:#94a3b8">VAH</small><br><b>{fmt(vah)}</b></div>
             </div>
             """)
 
@@ -1185,10 +1212,10 @@ def _render_smc_panel(df: pd.DataFrame):
                 <span>SMC Score: <b>{s['smc_score']:+.2f}</b></span>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div style="font-size:0.8rem; color:#94a3b8;">Near Buy Liq: <b style="color:#fff">{s['near_buy_liq_pct']:.1f}%</b> (${s.get('near_buy_liq_price', 0):,.0f})</div>
+                <div style="font-size:0.8rem; color:#94a3b8;">Near Buy Liq: <b style="color:#fff">{s['near_buy_liq_pct']:.1f}%</b> ({_format_price(s.get('near_buy_liq_price', 0))})</div>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div style="font-size:0.8rem; color:#94a3b8;">Near Sell Liq: <b style="color:#fff">{s['near_sell_liq_pct']:.1f}%</b> (${s.get('near_sell_liq_price', 0):,.0f})</div>
+                <div style="font-size:0.8rem; color:#94a3b8;">Near Sell Liq: <b style="color:#fff">{s['near_sell_liq_pct']:.1f}%</b> ({_format_price(s.get('near_sell_liq_price', 0))})</div>
               </div>
             </div>
             """)
@@ -1498,7 +1525,7 @@ def _render_smart_entry_scanner(df: pd.DataFrame, smc_state: dict, wyckoff_state
             </div>
             <div style="color:#94a3b8; font-size:0.7rem; margin-bottom:12px;
                         border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:8px;">
-                Current: <b style="color:#fff; font-family:monospace;">${curr_price:,.2f}</b>
+                Current: <b style="color:#fff; font-family:monospace;">{_format_price(curr_price, symbol)}</b>
                 &nbsp;|&nbsp; Confluence: FVG · STOCH · VOL · FIB · WYK · IDM/SW
             </div>
             
@@ -1577,7 +1604,7 @@ def _render_smart_entry_scanner(df: pd.DataFrame, smc_state: dict, wyckoff_state
                     <div>
                         <span style="color:#00d4ff; font-weight:800; font-size:0.8rem;">🔑 TOP PICK:</span>
                         <span style="color:#fff; font-weight:700; font-size:0.8rem;">
-                            {tp_dir} ${tp['bottom']:,.1f}-{tp['top']:,.1f}</span>
+                            {tp_dir} {_format_price(tp['bottom'], symbol)} - {_format_price(tp['top'], symbol)}</span>
                     </div>
                     <span style="color:{tp_color}; font-size:0.7rem; font-weight:700;">
                         Score {tp['score']}/5 · {tp['proximity']:.1f}% away</span>
@@ -1715,7 +1742,7 @@ def _render_intel_card(symbol: str, p: dict):
         </div>
         <div class="bias-box">
             <div class="bias-row"><span>Daily Bias:</span><span style="color:{'#48bb78' if 'BULLISH' in p['bias'] else '#f56565'}; font-weight:800;">{bias_label}</span></div>
-            <div class="target-row"><span>T+1 Price Target:</span><span style="font-weight:800; font-size:1.2rem;">${p['predicted_price']:,.2f}</span></div>
+            <div class="target-row"><span>T+1 Price Target:</span><span style="font-weight:800; font-size:1.2rem;">{_format_price(p['predicted_price'], symbol)}</span></div>
         </div>
     </div>
     """)
@@ -1941,7 +1968,7 @@ def _render_liquidity_void_panel(smc_state: dict, current_price: float):
             ui_html += f"""
                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
                     <td style="padding: 8px 5px; color: {v['color']}; font-weight: 800;">{v['type']}</td>
-                    <td style="padding: 8px 5px; color: #fff; font-family: monospace;">${v['bottom']:,.1f} - {v['top']:,.1f}</td>
+                    <td style="padding: 8px 5px; color: #fff; font-family: monospace;">{_format_price(v['bottom'], symbol)} - {_format_price(v['top'], symbol)}</td>
                     <td style="padding: 8px 5px; text-align: right; color: #94a3b8;">{v['dist']:.1f}%</td>
                 </tr>
             """
@@ -2007,13 +2034,14 @@ def _render_reality_check(predictions: dict, df_outcome: pd.DataFrame):
     first_tol_gap = float(first["tol_gap_pct"])
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("AI Forecast", f"${first['pred']:,.2f}")
-    c2.metric("Actual Close", f"${first['actual']:,.2f}")
+    symbol_rc = st.session_state.get("global_symbol", "")
+    c1.metric("AI Forecast", _format_price(first['pred'], symbol_rc))
+    c2.metric("Actual Close", _format_price(first['actual'], symbol_rc))
     c3.metric("Tolerance <2%", f"{first_ape_pct:.2f}%", delta=f"{first_tol_gap:+.2f}% vs 2%")
     c4.metric("MAPE", f"{mape:.2f}%")
 
     c5, c6 = st.columns(2)
-    c5.metric("MAE", f"${mae:,.2f}")
+    c5.metric("MAE", _format_price(mae, symbol_rc))
     c6.metric("Direction Hit", f"{dir_hit:.1f}%")
 
     eval_df["horizon"] = eval_df["horizon"].map({1: "1D", 5: "1W", 21: "1M", 63: "3M"})
@@ -2364,7 +2392,7 @@ def render():
             </div>
             <div style="display:flex; align-items:center; gap:15px;">
                 <span style="font-size:1.3rem; font-weight:900; color:#fff; font-family:monospace;">
-                    ${live_price:,.2f}</span>
+                    {_format_price(live_price, symbol)}</span>
                 <span style="color:{chg_color}; font-weight:700; font-size:0.85rem;">
                     {chg_sign}{rt_quote.change:.2f}%</span>
                 <span style="color:#64748b; font-size:0.6rem;">
@@ -2843,7 +2871,7 @@ def render():
             # Add real-time price marker on chart
             if rt_quote:
                 fig.add_hline(y=live_price, line_dash="dot", line_color="#667eea",
-                             annotation_text=f"Live: ${live_price:,.2f}",
+                             annotation_text=f"Live: {_format_price(live_price, symbol)}",
                              annotation_font_color="#667eea",
                              annotation_position="top right")
 
@@ -2901,7 +2929,7 @@ def render():
         _render_intel_card(symbol, predictions[1])
         
         # RESTORED: Execution Plan (Phases 0, 1, 2)
-        _render_execution_panel(df_train, smc_state, wyckoff_state, predictions, scalp_intel)
+        _render_execution_panel(df_train, smc_state, wyckoff_state, predictions, scalp_intel, symbol, market)
         
         # 2. Context Panels
         _render_html("<br>")
@@ -2922,7 +2950,7 @@ def render():
     h_labels = {1: "1 Day", 5: "1 Week", 21: "1 Month", 63: "3 Months"}
     for idx, h in enumerate([1, 5, 21, 63]):
         p = predictions[h]
-        p_cols[idx].metric(h_labels[h], f"${p['predicted_price']:,.2f}", delta=f"{p['predicted_return']:+.2f}%")
+        p_cols[idx].metric(h_labels[h], _format_price(p['predicted_price'], symbol), delta=f"{p['predicted_return']:+.2f}%")
         p_cols[idx].markdown(f"<small>{p['bias']}</small>", unsafe_allow_html=True)
     _render_forecast_basis(predictions)
     _render_upgrade_governance(
@@ -2939,7 +2967,7 @@ def render():
     <div style="text-align:center; color:#64748b; font-size:0.6rem; margin-top:10px; padding:8px;
                 border-top:1px solid rgba(255,255,255,0.05);">
         Historical Data: {df_train['Date'].iloc[-1].strftime('%Y-%m-%d')} |
-        Live Price: {'${:,.2f} via {}'.format(live_price, source_label) if rt_quote else 'N/A'} |
+        Live Price: {'{} via {}'.format(_format_price(live_price, symbol), source_label) if rt_quote else 'N/A'} |
         Last Refresh: {ts_display}
     </div>
     """)

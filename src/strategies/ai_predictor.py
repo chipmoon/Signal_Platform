@@ -241,10 +241,12 @@ class AIPredictor:
             if is_panel:
                 grouped = result.groupby("Symbol", group_keys=False)
                 for h in self.horizons:
-                    result[f"target_ret_{h}d"] = np.log(grouped["Close"].shift(-h) / result["Close"])
+                    raw_log = np.log(grouped["Close"].shift(-h) / result["Close"])
+                    result[f"target_ret_{h}d"] = np.clip(raw_log, -1.0, 1.0)
             else:
                 for h in self.horizons:
-                    result[f"target_ret_{h}d"] = np.log(result["Close"].shift(-h) / result["Close"])
+                    raw_log = np.log(result["Close"].shift(-h) / result["Close"])
+                    result[f"target_ret_{h}d"] = np.clip(raw_log, -1.0, 1.0)
 
         features = (
             ["ma_5_rel", "ma_15_rel", "rsi_14", "atr_14_rel", "macd_hist_rel", "roc_5", "roc_20",
@@ -396,9 +398,9 @@ class AIPredictor:
                 X_scaled_df = pd.DataFrame(X_scaled, columns=features)
                 
                 # Predict log returns for each quantile
-                q10_ret = self._models[h][0.1].predict(X_scaled_df)
-                q50_ret = self._models[h][0.5].predict(X_scaled_df)
-                q90_ret = self._models[h][0.9].predict(X_scaled_df)
+                q10_ret = np.clip(self._models[h][0.1].predict(X_scaled_df), -1.0, 1.0)
+                q50_ret = np.clip(self._models[h][0.5].predict(X_scaled_df), -1.0, 1.0)
+                q90_ret = np.clip(self._models[h][0.9].predict(X_scaled_df), -1.0, 1.0)
                 
                 # Convert log returns to prices: P_target = P_now * exp(r)
                 df[f"ai_target_price_{h}d"] = current_close * np.exp(q50_ret)

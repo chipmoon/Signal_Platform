@@ -23,8 +23,76 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from loguru import logger
+
+
+_SCALE_JUMP_THRESHOLD = 2.0   # log-return magnitude signaling a unit change
+
+
+def _sanitize_price_scale(df: pd.DataFrame, label: str = "") -> pd.DataFrame:
+    """
+    Detect and repair unit-scale discontinuities in a price DataFrame.
+    Repairs up to 2 break-points (3-segment data). Drops rows if hopelessly corrupt.
+    Silent and fast — runs on every cache read/write to self-heal poisoned data.
+    """
+    if df.empty or "Close" not in df.columns:
+        return df
+
+    close = df["Close"].astype(float)
+    log_ret = np.log(close / close.shift(1)).fillna(0)
+    big = log_ret.abs()[log_ret.abs() >= _SCALE_JUMP_THRESHOLD]
+
+    if big.empty:
+        return df  # Clean — fast path
+
+    # Collect scale-change breaks (ratio > 100x or < 0.005)
+    price_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+    breaks = []
+    for idx in big.index:
+        prev = float(close.iloc[idx - 1]) if idx > 0 else 0
+        if prev == 0:
+            continue
+        ratio = float(close.iloc[idx]) / prev
+        if abs(ratio) > 100 or abs(ratio) < 0.005:
+            breaks.append((int(idx), ratio))
+
+    if not breaks:
+        return df  # Jump exists but not a unit-scale issue (e.g. halt/delist)
+
+    if len(breaks) > 2:
+        # Hopelessly corrupt: truncate to the latest clean segment after last break
+        last_idx = breaks[-1][0]
+        logger.warning(f"CacheMgr [{label}]: {len(breaks)} scale breaks, keeping rows {last_idx}+")
+        return df.iloc[last_idx:].reset_index(drop=True)
+
+    df_out = df.copy()
+    if len(breaks) == 1:
+        idx, ratio = breaks[0]
+        df_out.loc[:idx - 1, price_cols] = (
+            df.loc[:idx - 1, price_cols].astype(float) * ratio
+        )
+    else:
+        idx1, r1 = breaks[0]
+        idx2, r2 = breaks[1]
+        df_out.loc[idx1:idx2 - 1, price_cols] = (
+            df.loc[idx1:idx2 - 1, price_cols].astype(float) * r2
+        )
+        df_out.loc[:idx1 - 1, price_cols] = (
+            df.loc[:idx1 - 1, price_cols].astype(float) * r1 * r2
+        )
+
+    # Final sanity check
+    new_log = np.log(df_out["Close"].astype(float) / df_out["Close"].astype(float).shift(1)).fillna(0)
+    if new_log.abs().max() > _SCALE_JUMP_THRESHOLD:
+        # Repair failed: keep only the latest segment
+        last_idx = breaks[-1][0]
+        logger.warning(f"CacheMgr [{label}]: repair failed, keeping rows {last_idx}+")
+        return df.iloc[last_idx:].reset_index(drop=True)
+
+    logger.debug(f"CacheMgr [{label}]: auto-repaired {len(breaks)} scale break(s)")
+    return df_out
 
 
 # ─── Default cache directory ───────────────────────────────────────
@@ -148,6 +216,9 @@ class CacheManager:
                 combined = combined.sort_values("Date").reset_index(drop=True)
             df = combined
 
+        # Always sanitize before writing to prevent scale-corrupt data persisting
+        df = _sanitize_price_scale(df, label=f"{symbol}_{market}_write")
+
         df.to_parquet(path, index=False, engine="pyarrow")
 
         key = f"price_{symbol}_{market}"
@@ -196,6 +267,9 @@ class CacheManager:
 
         try:
             df = pd.read_parquet(path, engine="pyarrow")
+
+            # Sanitize scale discontinuities on every read (self-healing)
+            df = _sanitize_price_scale(df, label=f"{symbol}_{market}_read")
 
             # Apply date filters
             if "Date" in df.columns and (start or end):

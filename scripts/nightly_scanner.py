@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -126,6 +127,72 @@ _WEIGHT_DESC = "30% Fund | 25% W+SMC | 20% MTF | 15% EW | 10% Flow"
 # Helper: Load price data from cache
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sanitize_price_scale(df: pd.DataFrame, path: Path) -> pd.DataFrame | None:
+    """
+    Detect and repair scale discontinuities (unit format changes) in price data.
+    Returns repaired DataFrame, or None if data is too corrupt to fix.
+    """
+    if "Close" not in df.columns:
+        return df
+
+    close = df["Close"].astype(float)
+    log_ret = np.log(close / close.shift(1)).fillna(0)
+    big_jumps = log_ret.abs()[log_ret.abs() > 2.0]
+
+    if big_jumps.empty:
+        return df  # Clean
+
+    price_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+    breaks = []
+    for idx in big_jumps.index:
+        prev = float(close.iloc[idx - 1])
+        if prev == 0:
+            continue
+        ratio = float(close.iloc[idx]) / prev
+        if abs(ratio) > 100 or abs(ratio) < 0.005:
+            breaks.append((int(idx), ratio))
+
+    if not breaks:
+        return df  # Non-scale jumps (e.g. circuit breakers)
+
+    if len(breaks) > 2:
+        # Too corrupt, delete cache so it gets re-fetched
+        logger.warning(f"  {path.stem}: corrupt scale ({len(breaks)} breaks), deleting cache")
+        path.unlink(missing_ok=True)
+        return None
+
+    df_out = df.copy()
+    if len(breaks) == 1:
+        idx, ratio = breaks[0]
+        df_out.loc[:idx - 1, price_cols] = (
+            df.loc[:idx - 1, price_cols].astype(float) * ratio
+        )
+    else:
+        idx1, r1 = breaks[0]
+        idx2, r2 = breaks[1]
+        df_out.loc[idx1:idx2 - 1, price_cols] = (
+            df.loc[idx1:idx2 - 1, price_cols].astype(float) * r2
+        )
+        df_out.loc[:idx1 - 1, price_cols] = (
+            df.loc[:idx1 - 1, price_cols].astype(float) * r1 * r2
+        )
+
+    # Verify fix worked
+    new_log = np.log(df_out["Close"].astype(float) / df_out["Close"].astype(float).shift(1)).fillna(0)
+    if new_log.abs().max() > 2.0:
+        logger.warning(f"  {path.stem}: scale repair failed, deleting cache")
+        path.unlink(missing_ok=True)
+        return None
+
+    logger.debug(f"  {path.stem}: auto-repaired {len(breaks)} scale break(s)")
+    # Save repaired file back to avoid re-processing on next load
+    try:
+        df_out.to_parquet(path, engine="pyarrow", index=False)
+    except Exception:
+        pass
+    return df_out
+
+
 def _load_price_df(symbol: str, market: str) -> Optional[pd.DataFrame]:
     """Load price DataFrame from .cache/prices/ parquet."""
     safe = symbol.replace(".", "_").replace("-", "_")
@@ -141,6 +208,10 @@ def _load_price_df(symbol: str, market: str) -> Optional[pd.DataFrame]:
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"])
             df = df.sort_values("Date").reset_index(drop=True)
+        # Auto-repair scale discontinuities before returning
+        df = _sanitize_price_scale(df, path)
+        if df is None:
+            return None
         return df if len(df) >= 60 else None
     except Exception as e:
         logger.debug(f"Price load failed for {symbol}: {e}")
