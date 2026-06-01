@@ -110,6 +110,15 @@ TAIWAN_STOCKS = {
     "2412.TW": {"Name": "Chunghwa Telecom", "Name_CN": "中華電", "Sector": "Telecomm"},
     "3045.TW": {"Name": "Taiwan Mobile", "Name_CN": "台灣大", "Sector": "Telecomm"},
     "2912.TW": {"Name": "PCSC (7-Eleven)", "Name_CN": "統一超", "Sector": "Retail"},
+
+    # --- IC Packaging, Testing & Mid-cap Semis ---
+    "2484.TW": {"Name": "Hua Ying Precision", "Name_CN": "華映精密", "Sector": "IC - Precision Parts"},
+    "2404.TW": {"Name": "Fositek", "Name_CN": "漢唐", "Sector": "Electronics"},
+    "3481.TW": {"Name": "Innolux", "Name_CN": "群創", "Sector": "Display - LCD"},
+    "2352.TW": {"Name": "Qisda", "Name_CN": "佳世達", "Sector": "Electronics OEM"},
+    "2451.TW": {"Name": "Advantech (AIMB)", "Name_CN": "創見資訊", "Sector": "Storage - Memory Module"},
+    "5388.TW": {"Name": "Chroma ATE", "Name_CN": "致茂", "Sector": "Test & Measurement"},
+    "3533.TW": {"Name": "BizLink", "Name_CN": "貿聯-KY", "Sector": "Connectivity"},
 }
 
 
@@ -314,10 +323,22 @@ class TaiwanStockProvider(AssetProvider):
         interval: str = "1d",
     ) -> pd.DataFrame:
         """Fetch Taiwan stock price data — cache-first, yfinance fallback."""
-        if not symbol.endswith('.TW') and not symbol.endswith('.TWO'):
-            yahoo_symbol = f"{symbol}.TW"
+        # Normalize: strip internal suffixes like '_TW', '_TWO' added by the registry
+        # e.g. '2484_TW' → '2484', '5274_TWO' → '5274'
+        raw = symbol.replace('_TWO', '').replace('_TW', '')
+
+        if raw.endswith('.TW') or raw.endswith('.TWO'):
+            yahoo_symbol = raw
         else:
-            yahoo_symbol = symbol
+            # Check curated list for canonical suffix (.TW vs .TWO)
+            clean_upper = raw.upper()
+            yahoo_symbol = None
+            for curated in TAIWAN_STOCKS:
+                if curated.replace('.TW', '').replace('.TWO', '').upper() == clean_upper:
+                    yahoo_symbol = curated
+                    break
+            if yahoo_symbol is None:
+                yahoo_symbol = f"{raw}.TW"  # default to TWSE
 
         clean_code = yahoo_symbol.replace('.TW', '').replace('.TWO', '')
 
