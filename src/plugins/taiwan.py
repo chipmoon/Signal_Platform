@@ -113,12 +113,15 @@ TAIWAN_STOCKS = {
 
     # --- IC Packaging, Testing & Mid-cap Semis ---
     "2484.TW": {"Name": "Hua Ying Precision", "Name_CN": "華映精密", "Sector": "IC - Precision Parts"},
+    "6770.TW": {"Name": "Power Chip Semiconductor", "Name_CN": "力積電", "Sector": "Semiconductors - Foundry"},
     "2404.TW": {"Name": "Fositek", "Name_CN": "漢唐", "Sector": "Electronics"},
     "3481.TW": {"Name": "Innolux", "Name_CN": "群創", "Sector": "Display - LCD"},
     "2352.TW": {"Name": "Qisda", "Name_CN": "佳世達", "Sector": "Electronics OEM"},
-    "2451.TW": {"Name": "Advantech (AIMB)", "Name_CN": "創見資訊", "Sector": "Storage - Memory Module"},
+    "2451.TW": {"Name": "Transcend Information", "Name_CN": "創見資訊", "Sector": "Storage - Memory Module"},
     "5388.TW": {"Name": "Chroma ATE", "Name_CN": "致茂", "Sector": "Test & Measurement"},
     "3533.TW": {"Name": "BizLink", "Name_CN": "貿聯-KY", "Sector": "Connectivity"},
+    "2360.TW": {"Name": "Chenbro Micom", "Name_CN": "勤誠興業", "Sector": "Server Chassis"},
+    "6415.TW": {"Name": "Silergy-KY", "Name_CN": "矽力-KY", "Sector": "Power Management IC"},
 }
 
 
@@ -402,12 +405,13 @@ class TaiwanStockProvider(AssetProvider):
     
     def get_fundamentals(self, symbol: str) -> Dict[str, float]:
         """Get fundamental data for Taiwan stock from Yahoo Finance."""
-        if not symbol.endswith('.TW') and not symbol.endswith('.TWO'):
-            # Default to checking local list first
-            info = self.get_asset_info(symbol)
-            yahoo_symbol = info.symbol if info else f"{symbol}.TW"
+        # Strip internal registry suffixes (_TW, _TWO) before resolving
+        clean = symbol.replace('_TWO', '').replace('_TW', '')
+        if not clean.endswith('.TW') and not clean.endswith('.TWO'):
+            info = self.get_asset_info(clean)
+            yahoo_symbol = info.symbol if info else f"{clean}.TW"
         else:
-            yahoo_symbol = symbol
+            yahoo_symbol = clean
         
         fundamentals = {'eps': 0.0, 'pe': 0.0, 'pb': 0.0, 'roe': 0.0, 'bvps': 0.0, 'dividend_yield': 0.0}
         try:
@@ -426,11 +430,12 @@ class TaiwanStockProvider(AssetProvider):
     
     def get_realtime_quote(self, symbol: str) -> Optional[RealtimeQuote]:
         """Fetch latest price for Taiwan stocks from yfinance fast_info."""
-        if not symbol.endswith('.TW') and not symbol.endswith('.TWO'):
-            asset = self.get_asset_info(symbol)
-            yahoo_symbol = asset.symbol if asset else f"{symbol}.TW"
+        clean = symbol.replace('_TWO', '').replace('_TW', '')
+        if not clean.endswith('.TW') and not clean.endswith('.TWO'):
+            asset = self.get_asset_info(clean)
+            yahoo_symbol = asset.symbol if asset else f"{clean}.TW"
         else:
-            yahoo_symbol = symbol
+            yahoo_symbol = clean
 
         try:
             with _safe_yfinance_env():

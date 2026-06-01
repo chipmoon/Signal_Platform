@@ -70,19 +70,27 @@ class FundamentalScore:
 # ─── Scorer ───────────────────────────────────────────────────────────────────
 
 def _to_yf_ticker(symbol: str, market: str) -> str:
+    """Convert internal registry symbol (e.g. '2484_TW') to a valid Yahoo Finance ticker ('2484.TW')."""
     if market == "VN":
-        base_symbol = symbol.replace('.VN', '').upper()
+        # Strip both .VN (Yahoo) and _VN (registry) suffixes
+        base_symbol = symbol.replace('.VN', '').replace('_VN', '').upper()
         return f"{base_symbol}.VN"
     elif market == "TW":
-        base_symbol = symbol.replace('.TW', '').replace('.TWO', '').upper()
+        # Strip both Yahoo-style (.TW/.TWO) and registry-style (_TW/_TWO) suffixes
+        base_symbol = (
+            symbol
+            .replace('.TWO', '').replace('_TWO', '')
+            .replace('.TW', '').replace('_TW', '')
+            .upper()
+        )
         try:
             from src.plugins.taiwan import TAIWAN_STOCKS
             for curated_symbol in TAIWAN_STOCKS:
                 if curated_symbol.replace('.TW', '').replace('.TWO', '').upper() == base_symbol:
-                    return curated_symbol
+                    return curated_symbol  # e.g. '5274.TWO'
         except Exception:
             pass
-        return f"{base_symbol}.TW"
+        return f"{base_symbol}.TW"  # default to TWSE
     return symbol
 
 
