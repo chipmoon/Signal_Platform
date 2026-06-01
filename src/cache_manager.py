@@ -189,6 +189,24 @@ class CacheManager:
             logger.warning(f"Failed to read cache {path}: {e}")
             return None
 
+    def _clean_symbol(self, symbol: str) -> str:
+        """Normalize symbol by stripping market suffixes in any format.
+
+        Handles both:
+          - Dot-style  (Yahoo Finance):  '2330.TW', '6770.TWO', 'VNM.VN'
+          - Underscore-style (registry): '2330_TW', '6770_TWO', 'VNM_VN'
+        Returns the bare numeric/alphabetic code, uppercased.
+        """
+        return (
+            symbol
+            .replace(".TWO", "").replace("_TWO", "")
+            .replace(".TW", "").replace("_TW", "")
+            .replace(".VN", "").replace("_VN", "")
+            .replace(".US", "").replace("_US", "")
+            .replace(".", "_").replace("=", "_").replace("-", "_")
+            .upper()
+        )
+
     # ─── Price Data Cache ──────────────────────────────────────
 
     def _price_path(self, symbol: str, market: str) -> Path:
@@ -291,12 +309,11 @@ class CacheManager:
         """Cache fundamental data for a symbol as JSON."""
         fundamentals_dir = self.cache_dir / "fundamentals"
         fundamentals_dir.mkdir(parents=True, exist_ok=True)
-        clean_symbol = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").upper()
-        safe_name = clean_symbol.replace(".", "_").replace("=", "_").replace("-", "_")
-        path = fundamentals_dir / f"{safe_name}_{market}.json"
-        
+        clean_symbol = self._clean_symbol(symbol)
+        path = fundamentals_dir / f"{clean_symbol}_{market}.json"
+
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        
+
         key = f"fundamentals_{clean_symbol}_{market}"
         self._meta[key] = {
             "updated": datetime.now().isoformat(),
@@ -311,9 +328,8 @@ class CacheManager:
         Get cached fundamental data if it exists and is fresh.
         Default max age is 7 days since fundamentals change slowly.
         """
-        clean_symbol = symbol.replace(".VN", "").replace(".TW", "").replace(".TWO", "").upper()
-        safe_name = clean_symbol.replace(".", "_").replace("=", "_").replace("-", "_")
-        path = self.cache_dir / "fundamentals" / f"{safe_name}_{market}.json"
+        clean_symbol = self._clean_symbol(symbol)
+        path = self.cache_dir / "fundamentals" / f"{clean_symbol}_{market}.json"
         
         if not path.exists():
             return None
