@@ -114,6 +114,7 @@ TAIWAN_STOCKS = {
     # --- IC Packaging, Testing & Mid-cap Semis ---
     "2484.TW": {"Name": "Hua Ying Precision", "Name_CN": "華映精密", "Sector": "IC - Precision Parts"},
     "6770.TW": {"Name": "Power Chip Semiconductor", "Name_CN": "力積電", "Sector": "Semiconductors - Foundry"},
+    "4573.TWO": {"Name": "GMT", "Name_CN": "高美科", "Sector": "IC - Thermal / Passive Components"},
     "2404.TW": {"Name": "Fositek", "Name_CN": "漢唐", "Sector": "Electronics"},
     "3481.TW": {"Name": "Innolux", "Name_CN": "群創", "Sector": "Display - LCD"},
     "2352.TW": {"Name": "Qisda", "Name_CN": "佳世達", "Sector": "Electronics OEM"},
@@ -182,8 +183,13 @@ class TaiwanStockProvider(AssetProvider):
         if self._initialized:
             return
             
-        # Try cache first (full listing: ~40k stocks)
+        # Try fresh cache first, then use stale full-list cache as a better
+        # fallback than the small curated list.
         cached = cache.get_cached_stock_list("TW", max_age_hours=168) # 7 days
+        if not cached:
+            cached = cache.get_cached_stock_list("TW", max_age_hours=999999)
+            if cached:
+                logger.warning("Using stale TW stock list cache; run scripts/update_taiwan_stocks.py to refresh.")
         if cached:
             self._stock_list = cached
             self._initialized = True
@@ -217,12 +223,35 @@ class TaiwanStockProvider(AssetProvider):
         """
         self._ensure_initialized()
         query_lower = query.lower()
-        q_clean = query_lower.replace('.tw', '').replace('.two', '').strip()
+        q_clean = query_lower.replace('.two', '').replace('.tw', '').strip()
         results = []
+
+        if not q_clean:
+            return [
+                AssetInfo(
+                    symbol=stock['symbol'],
+                    name=str(stock.get('name', stock['symbol'])),
+                    market=self.market_id,
+                    sector=stock.get('sector', 'Taiwan Stock'),
+                    exchange=stock.get('exchange', 'TWSE/TPE'),
+                    currency="TWD",
+                )
+                for stock in self._stock_list[:limit]
+                if stock.get('symbol')
+            ]
+
+        # Exact 4-digit lookup may require suffix detection (.TW vs .TWO),
+        # especially for TPEx/Emerging symbols not present in the curated list.
+        if q_clean.isdigit() and len(q_clean) == 4:
+            exact = self.get_asset_info(query)
+            if exact:
+                results.append(exact)
         
         # Priority 1: Hot Stocks from hardcoded list (if they match)
         for symbol, info in TAIWAN_STOCKS.items():
-            stock_code = symbol.replace('.TW', '').replace('.TWO', '')
+            if symbol in {r.symbol for r in results}:
+                continue
+            stock_code = symbol.replace('.TWO', '').replace('.TW', '')
             if (q_clean and q_clean == stock_code.lower()) or (query_lower and (query_lower in info['Name'].lower() or query_lower in info.get('Name_CN', '').lower())):
                 results.append(
                     AssetInfo(
@@ -268,11 +297,11 @@ class TaiwanStockProvider(AssetProvider):
 
         # 1. Exact match in full list
         # Handle formats like "8096", "8096.TW", "8096.TWO"
-        clean_code = symbol.replace('.TW', '').replace('.TWO', '')
+        clean_code = symbol.replace('.TWO', '').replace('.TW', '')
 
         # 0. Prefer curated list metadata for canonical naming consistency.
         for curated_symbol, info in TAIWAN_STOCKS.items():
-            curated_code = curated_symbol.replace('.TW', '').replace('.TWO', '')
+            curated_code = curated_symbol.replace('.TWO', '').replace('.TW', '')
             if curated_symbol == symbol or curated_code.upper() == clean_code.upper():
                 return AssetInfo(
                     symbol=curated_symbol,
@@ -285,7 +314,7 @@ class TaiwanStockProvider(AssetProvider):
         
         for stock in self._stock_list:
             stock_clean = stock['symbol'].split('.')[0].upper()
-            if stock['symbol'] == symbol or stock_clean == symbol:
+            if stock['symbol'].upper() == symbol or stock_clean == clean_code.upper():
                 return AssetInfo(
                     symbol=stock['symbol'],
                     name=stock['name'],
@@ -341,15 +370,16 @@ class TaiwanStockProvider(AssetProvider):
                     yahoo_symbol = curated
                     break
             if yahoo_symbol is None:
-                yahoo_symbol = f"{raw}.TW"  # default to TWSE
+                info = self.get_asset_info(raw)
+                yahoo_symbol = info.symbol if info else f"{raw}.TW"  # default to TWSE
 
-        clean_code = yahoo_symbol.replace('.TW', '').replace('.TWO', '')
+        clean_code = yahoo_symbol.replace('.TWO', '').replace('.TW', '')
 
         # 1. Try local OHLCV cache first (populated by nightly scan)
         try:
             cache_dir = Path(__file__).resolve().parents[2] / ".cache" / "ohlcv"
-            for fname in [f"{yahoo_symbol}.parquet", f"{clean_code}.TW.parquet",
-                          f"{yahoo_symbol}.csv", f"{clean_code}.TW.csv"]:
+            for fname in [f"{yahoo_symbol}.parquet", f"{clean_code}.TW.parquet", f"{clean_code}.TWO.parquet",
+                          f"{yahoo_symbol}.csv", f"{clean_code}.TW.csv", f"{clean_code}.TWO.csv"]:
                 cache_path = cache_dir / fname
                 if cache_path.exists():
                     if fname.endswith('.parquet'):

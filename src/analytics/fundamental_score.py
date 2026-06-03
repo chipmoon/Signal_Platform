@@ -77,6 +77,7 @@ def _to_yf_ticker(symbol: str, market: str) -> str:
         return f"{base_symbol}.VN"
     elif market == "TW":
         # Strip both Yahoo-style (.TW/.TWO) and registry-style (_TW/_TWO) suffixes
+        # NOTE: .TWO must be stripped BEFORE .TW to avoid '4573.TWO' -> '4573O'
         base_symbol = (
             symbol
             .replace('.TWO', '').replace('_TWO', '')
@@ -86,8 +87,14 @@ def _to_yf_ticker(symbol: str, market: str) -> str:
         try:
             from src.plugins.taiwan import TAIWAN_STOCKS
             for curated_symbol in TAIWAN_STOCKS:
-                if curated_symbol.replace('.TW', '').replace('.TWO', '').upper() == base_symbol:
-                    return curated_symbol  # e.g. '5274.TWO'
+                # Strip .TWO before .TW to avoid partial match ('4573.TWO' -> '4573O')
+                curated_base = (
+                    curated_symbol
+                    .replace('.TWO', '').replace('.TW', '')
+                    .upper()
+                )
+                if curated_base == base_symbol:
+                    return curated_symbol  # e.g. '5274.TWO', '4573.TWO'
         except Exception:
             pass
         return f"{base_symbol}.TW"  # default to TWSE
