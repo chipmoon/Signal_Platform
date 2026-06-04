@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-06-03T21:06:09.339594",
-  "scan_date": "2026-06-03",
+  "generated_at": "2026-06-04T21:07:14.144937",
+  "scan_date": "2026-06-04",
   "market_scope": "VN_TW",
-  "total_candidates": 40,
+  "total_candidates": 20,
   "counts": {
-    "grade_a_raw": 4,
-    "grade_b_raw": 5,
-    "grade_c_raw": 31,
-    "top_a_sent": 4,
-    "wave5_caution_in_top_a": 3,
+    "grade_a_raw": 3,
+    "grade_b_raw": 2,
+    "grade_c_raw": 15,
+    "top_a_sent": 3,
+    "wave5_caution_in_top_a": 2,
     "strategic_only_in_top_a": 0
   },
   "notes": {
@@ -19,26 +19,6 @@
   "top_a": [
     {
       "rank": 1,
-      "symbol": "3702.TW",
-      "market": "TW",
-      "entry_grade_tactical": "A",
-      "entry_grade_final": "B",
-      "strategic_tag": "CAUTION_WAVE5",
-      "strategic_detail": "wave=5 conf=72%",
-      "fundamental_grade": "B",
-      "fundamental_score": 65,
-      "consensus_action": "WATCH_PULLBACK",
-      "recommendation": "STRONG BUY",
-      "institutional_score": 1.0,
-      "pred_21d_ret": 16.215243923746208,
-      "pred_63d_ret": 72.09025582144052,
-      "entry": 119.0,
-      "stop_loss": 111.86,
-      "target": 204.78740442751422,
-      "rr": 12.015042636906752
-    },
-    {
-      "rank": 2,
       "symbol": "NAF.VN",
       "market": "VN",
       "entry_grade_tactical": "A",
@@ -49,13 +29,33 @@
       "fundamental_score": 57,
       "consensus_action": "WATCH_PULLBACK",
       "recommendation": "STRONG BUY",
-      "institutional_score": 0.7129485332571138,
-      "pred_21d_ret": 8.36412241994066,
-      "pred_63d_ret": 22.07752967187129,
+      "institutional_score": 0.7566414175582794,
+      "pred_21d_ret": 9.097198852413133,
+      "pred_63d_ret": 22.674062984485822,
       "entry": 52000.0,
       "stop_loss": 49400.0,
-      "target": 63480.31542937307,
-      "rr": 4.4155059343742575
+      "target": 63790.51275193263,
+      "rr": 4.534812596897164
+    },
+    {
+      "rank": 2,
+      "symbol": "FDC.VN",
+      "market": "VN",
+      "entry_grade_tactical": "A",
+      "entry_grade_final": "A",
+      "strategic_tag": "OK",
+      "strategic_detail": "wave=5 conf=52%",
+      "fundamental_grade": "A+",
+      "fundamental_score": 90,
+      "consensus_action": "BUY",
+      "recommendation": "STRONG BUY",
+      "institutional_score": 0.6080957417269558,
+      "pred_21d_ret": 10.11962047760995,
+      "pred_63d_ret": 8.701169306352813,
+      "entry": 21800.0,
+      "stop_loss": 20710.0,
+      "target": 23696.854908784913,
+      "rr": 1.7402338612705626
     },
     {
       "rank": 3,
@@ -69,38 +69,26 @@
       "fundamental_score": 17,
       "consensus_action": "REDUCE_RISK",
       "recommendation": "STRONG BUY",
-      "institutional_score": 0.6102218149591776,
-      "pred_21d_ret": 3.035263558923148,
-      "pred_63d_ret": 22.884999244627128,
-      "entry": 11500.0,
-      "stop_loss": 10925.0,
-      "target": 14131.77491313212,
-      "rr": 4.576999848925426
-    },
-    {
-      "rank": 4,
-      "symbol": "FDC.VN",
-      "market": "VN",
-      "entry_grade_tactical": "A",
-      "entry_grade_final": "A",
-      "strategic_tag": "OK",
-      "strategic_detail": "wave=5 conf=52%",
-      "fundamental_grade": "A+",
-      "fundamental_score": 90,
-      "consensus_action": "BUY",
-      "recommendation": "STRONG BUY",
-      "institutional_score": 0.4558396971992243,
-      "pred_21d_ret": 5.535393877846519,
-      "pred_63d_ret": 5.343862026258865,
-      "entry": 21800.0,
-      "stop_loss": 20710.0,
-      "target": 22964.961921724433,
-      "rr": 1.068772405251773
+      "institutional_score": 0.6030820714725139,
+      "pred_21d_ret": 11.056902201054907,
+      "pred_63d_ret": 12.7523812542256,
+      "entry": 12300.0,
+      "stop_loss": 11685.0,
+      "target": 13868.542894269749,
+      "rr": 2.5504762508451204
     }
   ],
   "grade_c_watchout": [
     {
       "rank": 1,
+      "symbol": "ASP.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 1.0,
+      "reason": "Weak setup / flow risk"
+    },
+    {
+      "rank": 2,
       "symbol": "TCO.VN",
       "market": "VN",
       "entry_grade": "C",
@@ -108,59 +96,51 @@
       "reason": "Low confidence gate"
     },
     {
-      "rank": 2,
-      "symbol": "2308.TW",
-      "market": "TW",
-      "entry_grade": "C",
-      "institutional_score": 1.0,
-      "reason": "Low confidence gate"
-    },
-    {
       "rank": 3,
-      "symbol": "2313.TW",
-      "market": "TW",
+      "symbol": "TNT.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.9238867009807283,
       "reason": "Low confidence gate"
     },
     {
       "rank": 4,
-      "symbol": "2337.TW",
-      "market": "TW",
+      "symbol": "BFC.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.8341572926761848,
       "reason": "Low confidence gate"
     },
     {
       "rank": 5,
-      "symbol": "2360.TW",
-      "market": "TW",
+      "symbol": "PET.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.7619895715871348,
       "reason": "Low confidence gate"
     },
     {
       "rank": 6,
-      "symbol": "2345.TW",
-      "market": "TW",
+      "symbol": "VHM.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.6554716151425307,
       "reason": "Low confidence gate"
     },
     {
       "rank": 7,
-      "symbol": "2368.TW",
-      "market": "TW",
+      "symbol": "PVP.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
-      "reason": "Low confidence gate"
+      "institutional_score": 0.643943681714168,
+      "reason": "Weak setup / flow risk"
     },
     {
       "rank": 8,
-      "symbol": "2383.TW",
-      "market": "TW",
+      "symbol": "HRC.VN",
+      "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.3510381524321979,
       "reason": "Low confidence gate"
     }
   ],
