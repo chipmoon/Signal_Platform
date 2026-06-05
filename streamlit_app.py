@@ -1,29 +1,83 @@
 """
-Trading Intelligence Platform — Streamlit Dashboard
+Trading Intelligence Platform - Streamlit Dashboard
 ===================================================
 Multi-page web application for professional trading system analysis.
 
 Pages:
-    1. 📊 Dashboard — Backtest overview & equity curve
-    2. 🎯 Strategy Analysis — Individual strategy breakdown
-    3. 🤖 AI Forecast — Multi-horizon predictions
-    4. 🛡️ Risk Monitor — Drawdown, VaR, position sizing
-    5. ⚙️ Settings — Parameter configuration
+    1. Dashboard - Backtest overview and equity curve
+    2. Strategy Analysis - Individual strategy breakdown
+    3. AI Forecast - Multi-horizon predictions
+    4. Risk Monitor - Drawdown, VaR, position sizing
+    5. Settings - Parameter configuration
 
 Usage:
     streamlit run streamlit_app.py
 """
 
+import os
+from pathlib import Path
+
 import streamlit as st
+import streamlit.components.v1 as components
 from loguru import logger
 
 # Page configuration
 st.set_page_config(
     page_title="Trading Intelligence Platform",
-    page_icon="📈",
+    page_icon="TS",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_FRESHNESS_FILES = [
+    PROJECT_ROOT / ".cache" / "meta.json",
+    PROJECT_ROOT / "data" / "nightly_scan_meta.json",
+]
+
+
+def _data_fingerprint() -> int:
+    """Return a cheap fingerprint for local files written by nightly jobs."""
+    stamps = [p.stat().st_mtime_ns for p in DATA_FRESHNESS_FILES if p.exists()]
+    return max(stamps) if stamps else 0
+
+
+def _sync_external_data_updates() -> None:
+    """Drop session quote caches after local nightly/cache files change."""
+    fingerprint = _data_fingerprint()
+    previous = st.session_state.get("_data_fingerprint")
+    if previous is not None and fingerprint and fingerprint != previous:
+        for key in list(st.session_state.keys()):
+            if key.startswith("rt_quote_"):
+                st.session_state.pop(key, None)
+    st.session_state["_data_fingerprint"] = fingerprint
+
+
+def _install_periodic_refresh() -> None:
+    """Keep a locally opened dashboard in sync with files updated outside Streamlit."""
+    try:
+        interval_sec = int(os.getenv("TRADING_SYSTEM_AUTO_REFRESH_SEC", "120"))
+    except ValueError:
+        interval_sec = 120
+    if interval_sec <= 0:
+        return
+    components.html(
+        f"""
+        <script>
+        setTimeout(function() {{
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set("_market_refresh", Date.now().toString());
+            window.parent.location.replace(url.toString());
+        }}, {interval_sec * 1000});
+        </script>
+        """,
+        height=0,
+    )
+
+
+_sync_external_data_updates()
+_install_periodic_refresh()
 
 # Custom Premium UI - High Contrast Theme
 st.markdown(
@@ -623,29 +677,31 @@ st.markdown(
 )
 
 # Sidebar navigation
-st.sidebar.title("📈 Trading Platform")
+# Keep navigation labels ASCII-safe to avoid mojibake on Windows/local Streamlit.
+st.sidebar.title("Trading Platform")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigation",
     [
-        "📡 Market Pulse",
-        "📊 Dashboard",
-        "🧠 Sentiment Hub",
-        "🔥 Alpha Scanner",
-        "🤖 AI Forecast",
-        "🌐 Geo-OSINT Lab",
-        "🛡️ Risk Monitor",
-        "📈 Asset Manager",
-        "⚙️ Settings",
+        "Market Pulse",
+        "Dashboard",
+        "Sentiment Hub",
+        "Alpha Scanner",
+        "Hidden Gem Council",
+        "AI Forecast",
+        "Geo-OSINT Lab",
+        "Risk Monitor",
+        "Asset Manager",
+        "Settings",
     ],
     index=0,
     label_visibility="collapsed",
 )
 
-# ── Learning Center ─────────────────────────────────────
+# Learning Center
 st.sidebar.markdown("---")
-with st.sidebar.expander("📚 Learning Center"):
+with st.sidebar.expander("Learning Center"):
     st.markdown("""
     **ATR (Average True Range)**
     Measures market volatility. Higher = more price movement.
@@ -662,9 +718,9 @@ with st.sidebar.expander("📚 Learning Center"):
     if st.button("Read Full Guide"):
         st.session_state["show_guide"] = True
 
-# ── Global Stock Selector ───────────────────────────────────────
+# Global Stock Selector
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎯 Active Stock")
+st.sidebar.markdown("### Active Stock")
 
 current_sym = st.session_state.get("global_symbol", "")
 current_mkt = st.session_state.get("global_market", "")
@@ -740,10 +796,10 @@ for i, s in enumerate(["TSLA", "SPY", "BTC-USD"]):
 
 st.sidebar.markdown("---")
 
-# ── Page Routing ──────────────────────────────────────────
+# Page Routing
 if st.session_state.get("show_guide", False):
-    st.markdown("## 📖 Trading Intelligence Guide")
-    if st.button("⬅️ Back to Dashboard"):
+    st.markdown("## Trading Intelligence Guide")
+    if st.button("Back to Dashboard"):
         st.session_state["show_guide"] = False
         st.rerun()
     
@@ -753,45 +809,49 @@ if st.session_state.get("show_guide", False):
     if st.button("Back to Top"):
         st.rerun()
 
-elif page == "📡 Market Pulse":
+elif page == "Market Pulse":
     from views import market_pulse
     market_pulse.render()
 
-elif page == "📊 Dashboard":
+elif page == "Dashboard":
     from views import dashboard
     dashboard.render()
 
-elif page == "🧠 Sentiment Hub":
+elif page == "Sentiment Hub":
     from views import sentiment_hub
     sentiment_hub.render()
 
 
 
-elif page == "🤖 AI Forecast":
+elif page == "AI Forecast":
     from views import ai_forecast
     ai_forecast.render()
 
-elif page == "🌐 Geo-OSINT Lab":
+elif page == "Geo-OSINT Lab":
     from views import geo_osint_lab
     geo_osint_lab.render()
 
-elif page == "🛡️ Risk Monitor":
+elif page == "Risk Monitor":
     from views import risk_monitor
     risk_monitor.render()
 
-elif page == "📈 Asset Manager":
+elif page == "Asset Manager":
     from views import asset_manager
     asset_manager.render()
 
-elif page == "🔥 Alpha Scanner":
+elif page == "Alpha Scanner":
     from views import alpha_scanner
     alpha_scanner.render()
 
-elif page == "⚙️ Settings":
+elif page == "Hidden Gem Council":
+    from views import hidden_gem
+    hidden_gem.render()
+
+elif page == "Settings":
     from views import settings
     settings.render()
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.caption("💼 Trading Intelligence Platform v2.0")
-st.sidebar.caption("Built with Streamlit • Powered by Machine Learning")
+st.sidebar.caption("Trading Intelligence Platform v2.0")
+st.sidebar.caption("Built with Streamlit - Powered by Machine Learning")
