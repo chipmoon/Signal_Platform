@@ -1,4 +1,4 @@
-"""
+r"""
 Nightly VN Cache Pipeline — Option A
 ======================================
 Chạy mỗi tối local để fetch dữ liệu VN từ vnstock → lưu parquet cache
@@ -107,22 +107,10 @@ def fetch_with_yfinance(symbol: str, start: str, end: str) -> pd.DataFrame | Non
 
 def save_cache(symbol: str, df: pd.DataFrame, cache_dir: Path) -> None:
     """Save parquet to .cache/prices/SYMBOL_VN.parquet."""
-    prices_dir = cache_dir / "prices"
-    prices_dir.mkdir(parents=True, exist_ok=True)
-    path = prices_dir / f"{symbol}_VN.parquet"
+    from src.cache_manager import CacheManager
 
-    # Merge with existing cache
-    if path.exists():
-        try:
-            existing = pd.read_parquet(path, engine="pyarrow")
-            existing["Date"] = pd.to_datetime(existing["Date"])
-            df["Date"] = pd.to_datetime(df["Date"])
-            df = pd.concat([existing, df]).drop_duplicates("Date", keep="last")
-            df = df.sort_values("Date").reset_index(drop=True)
-        except Exception:
-            pass
-
-    df.to_parquet(path, index=False, engine="pyarrow")
+    cm = CacheManager(str(cache_dir))
+    cm.cache_price_data(symbol, "VN", df)
 
 
 def update_stock_list_cache(symbols: list[str], cache_dir: Path) -> None:
