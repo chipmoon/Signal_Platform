@@ -192,6 +192,12 @@ class AssetProvider(ABC):
             price = float(last['Close'])
             prev_close = float(prev['Close'])
             change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+            timestamp = datetime.now().isoformat()
+            if 'Date' in last.index:
+                try:
+                    timestamp = pd.to_datetime(last['Date']).to_pydatetime().isoformat()
+                except Exception:
+                    pass
 
             return RealtimeQuote(
                 symbol=symbol,
@@ -201,9 +207,9 @@ class AssetProvider(ABC):
                 volume=float(last.get('Volume', 0)),
                 high=float(last.get('High', price)),
                 low=float(last.get('Low', price)),
-                timestamp=datetime.now().isoformat(),
+                timestamp=timestamp,
                 source='historical_fallback',
-                is_market_open=True,
+                is_market_open=False,
             )
         except Exception as e:
             from loguru import logger
