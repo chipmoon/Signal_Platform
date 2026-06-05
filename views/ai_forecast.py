@@ -2373,10 +2373,12 @@ def render():
         chg_color = "#00E676" if rt_quote.change >= 0 else "#FF5252"
         source_label = rt_quote.source.replace("_", " ").title()
         ts_display = datetime.fromisoformat(rt_quote.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        volume_display = f"{float(rt_quote.volume):,.0f}" if rt_quote.volume else "N/A"
     else:
         live_price = df_train["Close"].iloc[-1]
         source_label = "Historical Close"
         ts_display = "N/A"
+        volume_display = "N/A"
 
     # ── Live Price Banner ──
     if rt_quote:
@@ -2390,11 +2392,13 @@ def render():
                     {symbol} Live Price</span>
                 <span style="color:#667eea; font-size:0.5rem; margin-left:6px;">LATEST: {source_label}</span>
             </div>
-            <div style="display:flex; align-items:center; gap:15px;">
+            <div style="display:flex; align-items:center; justify-content:flex-end; gap:15px; flex-wrap:wrap;">
                 <span style="font-size:1.3rem; font-weight:900; color:#fff; font-family:monospace;">
                     {_format_price(live_price, symbol)}</span>
                 <span style="color:{chg_color}; font-weight:700; font-size:0.85rem;">
                     {chg_sign}{rt_quote.change:.2f}%</span>
+                <span style="color:#94a3b8; font-weight:700; font-size:0.65rem;">
+                    Vol {volume_display}</span>
                 <span style="color:#64748b; font-size:0.6rem;">
                     Updated {ts_display}</span>
             </div>
