@@ -2372,7 +2372,7 @@ def render():
         chg_sign = "+" if rt_quote.change >= 0 else ""
         chg_color = "#00E676" if rt_quote.change >= 0 else "#FF5252"
         source_label = rt_quote.source.replace("_", " ").title()
-        ts_display = datetime.fromisoformat(rt_quote.timestamp).strftime("%H:%M:%S")
+        ts_display = datetime.fromisoformat(rt_quote.timestamp).strftime("%Y-%m-%d %H:%M:%S")
     else:
         live_price = df_train["Close"].iloc[-1]
         source_label = "Historical Close"
