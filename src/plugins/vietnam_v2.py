@@ -20,6 +20,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from loguru import logger
@@ -314,6 +315,45 @@ class VietnamStockProviderV2(AssetProvider):
 
         return None
 
+    @staticmethod
+    def _previous_weekday(day):
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        return day
+
+    @classmethod
+    def _expected_latest_daily_date(cls) -> pd.Timestamp:
+        """Expected latest completed VN daily candle, excluding weekends."""
+        now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        expected = now_vn.date()
+
+        # Daily VN data usually settles after the 15:00 close. Give it a small buffer.
+        if expected.weekday() < 5 and (now_vn.hour, now_vn.minute) < (15, 15):
+            expected -= timedelta(days=1)
+
+        expected = cls._previous_weekday(expected)
+        return pd.Timestamp(expected)
+
+    def _cache_has_latest_daily(self, cached: pd.DataFrame, end: str) -> bool:
+        """Return True when daily cache covers the latest session this request can need."""
+        if cached is None or cached.empty or "Date" not in cached.columns:
+            return False
+
+        expected = self._expected_latest_daily_date()
+        try:
+            requested_end = pd.to_datetime(end).normalize()
+        except Exception:
+            requested_end = expected
+
+        if requested_end < expected:
+            return True
+
+        latest_cached = pd.to_datetime(cached["Date"], errors="coerce").max()
+        if pd.isna(latest_cached):
+            return False
+
+        return latest_cached.normalize() >= expected
+
     def get_price_data(
         self,
         symbol: str,
@@ -341,8 +381,10 @@ class VietnamStockProviderV2(AssetProvider):
             base_symbol, "VN", max_age_hours=24, start=start, end=end
         )
         if cached is not None and not cached.empty and "VNI" in cached.columns:
-            logger.info(f"Using cached enriched data for {base_symbol}")
-            return cached
+            if interval_l != "1d" or self._cache_has_latest_daily(cached, end):
+                logger.info(f"Using cached enriched data for {base_symbol}")
+                return cached
+            logger.info(f"Cached data for {base_symbol} is missing latest VN session; refreshing from provider")
 
         # Try primary fetch (vnstock)
         if VNSTOCK_AVAILABLE:
