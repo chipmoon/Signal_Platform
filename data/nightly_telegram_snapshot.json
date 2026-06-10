@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-06-09T21:07:15.776089",
-  "scan_date": "2026-06-09",
+  "generated_at": "2026-06-10T21:06:44.776597",
+  "scan_date": "2026-06-10",
   "market_scope": "VN_TW",
-  "total_candidates": 7,
+  "total_candidates": 5,
   "counts": {
-    "grade_a_raw": 1,
-    "grade_b_raw": 2,
-    "grade_c_raw": 4,
-    "top_a_sent": 1,
-    "wave5_caution_in_top_a": 0,
+    "grade_a_raw": 2,
+    "grade_b_raw": 1,
+    "grade_c_raw": 2,
+    "top_a_sent": 2,
+    "wave5_caution_in_top_a": 1,
     "strategic_only_in_top_a": 0
   },
   "notes": {
@@ -36,6 +36,26 @@
       "stop_loss": 18.904999999999998,
       "target": 35.82,
       "rr": 15.999999999999986
+    },
+    {
+      "rank": 2,
+      "symbol": "GLT.VN",
+      "market": "VN",
+      "entry_grade_tactical": "A",
+      "entry_grade_final": "B",
+      "strategic_tag": "CAUTION_WAVE5",
+      "strategic_detail": "wave=5 conf=72%",
+      "fundamental_grade": "A",
+      "fundamental_score": 72,
+      "consensus_action": "WATCH_PULLBACK",
+      "recommendation": "STRONG BUY",
+      "institutional_score": 1.0,
+      "pred_21d_ret": 16.756382275316863,
+      "pred_63d_ret": 39.65751500074789,
+      "entry": 28.8,
+      "stop_loss": 27.36,
+      "target": 40.22136432021539,
+      "rr": 7.931503000149571
     }
   ],
   "grade_c_watchout": [
@@ -49,32 +69,14 @@
     },
     {
       "rank": 2,
-      "symbol": "VVS.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.5710926026507256,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 3,
-      "symbol": "BSR.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.34886297652704523,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 4,
       "symbol": "PNC.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": -0.06397544631051892,
-      "reason": "Weak setup / flow risk"
+      "institutional_score": -0.11094494699013502,
+      "reason": "Low confidence gate"
     }
   ],
   "tips": [
-    "Ít Grade A: giảm tần suất vào lệnh mới, ưu tiên bảo toàn vốn.",
-    "Grade C chiếm cao: thị trường nhiễu/phân phối, chỉ giữ setup mạnh.",
-    "Nhiều mã bị veto: tránh FOMO, chờ xác nhận thêm 1 phiên."
+    "Ít Grade A: giảm tần suất vào lệnh mới, ưu tiên bảo toàn vốn."
   ]
 }
