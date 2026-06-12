@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-06-11T21:07:19.784356",
-  "scan_date": "2026-06-11",
+  "generated_at": "2026-06-12T21:06:47.238183",
+  "scan_date": "2026-06-12",
   "market_scope": "VN_TW",
-  "total_candidates": 6,
+  "total_candidates": 5,
   "counts": {
     "grade_a_raw": 1,
-    "grade_b_raw": 1,
+    "grade_b_raw": 0,
     "grade_c_raw": 4,
     "top_a_sent": 1,
     "wave5_caution_in_top_a": 0,
@@ -28,14 +28,14 @@
       "fundamental_grade": "B",
       "fundamental_score": 55,
       "consensus_action": "BUY",
-      "recommendation": "STRONG BUY",
+      "recommendation": "BUY",
       "institutional_score": 1.0,
-      "pred_21d_ret": 14.980982137307535,
+      "pred_21d_ret": 16.913822268523578,
       "pred_63d_ret": 80.0,
       "entry": 19.9,
-      "stop_loss": 18.904999999999998,
+      "stop_loss": 18.705999999999996,
       "target": 35.82,
-      "rr": 15.999999999999986
+      "rr": 13.333333333333306
     }
   ],
   "grade_c_watchout": [
@@ -49,18 +49,18 @@
     },
     {
       "rank": 2,
-      "symbol": "VVS.VN",
+      "symbol": "C32.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.42387579646383444,
+      "institutional_score": 0.3789128617257522,
       "reason": "Low confidence gate"
     },
     {
       "rank": 3,
-      "symbol": "C32.VN",
+      "symbol": "THD.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.22098221554726305,
+      "institutional_score": 0.3441804877491923,
       "reason": "Low confidence gate"
     },
     {
@@ -68,7 +68,7 @@
       "symbol": "PNC.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.02294743752413743,
+      "institutional_score": -0.15963189906540515,
       "reason": "Weak setup / flow risk"
     }
   ],
