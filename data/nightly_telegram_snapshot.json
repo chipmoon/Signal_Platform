@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-06-12T21:06:47.238183",
-  "scan_date": "2026-06-12",
+  "generated_at": "2026-06-15T21:07:08.487493",
+  "scan_date": "2026-06-15",
   "market_scope": "VN_TW",
-  "total_candidates": 5,
+  "total_candidates": 9,
   "counts": {
-    "grade_a_raw": 1,
-    "grade_b_raw": 0,
-    "grade_c_raw": 4,
-    "top_a_sent": 1,
+    "grade_a_raw": 0,
+    "grade_b_raw": 1,
+    "grade_c_raw": 8,
+    "top_a_sent": 0,
     "wave5_caution_in_top_a": 0,
     "strategic_only_in_top_a": 0
   },
@@ -16,32 +16,11 @@
     "strategic_definition": "Elliott weekly layer adds caution when Wave 5 / strategic-only context appears.",
     "consensus_definition": "Consensus Action combines tactical entry grade + Elliott strategic tag + fundamental quality."
   },
-  "top_a": [
-    {
-      "rank": 1,
-      "symbol": "HKT.VN",
-      "market": "VN",
-      "entry_grade_tactical": "A",
-      "entry_grade_final": "A",
-      "strategic_tag": "OK",
-      "strategic_detail": "wave=5 conf=52%",
-      "fundamental_grade": "B",
-      "fundamental_score": 55,
-      "consensus_action": "BUY",
-      "recommendation": "BUY",
-      "institutional_score": 1.0,
-      "pred_21d_ret": 16.913822268523578,
-      "pred_63d_ret": 80.0,
-      "entry": 19.9,
-      "stop_loss": 18.705999999999996,
-      "target": 35.82,
-      "rr": 13.333333333333306
-    }
-  ],
+  "top_a": [],
   "grade_c_watchout": [
     {
       "rank": 1,
-      "symbol": "ONE.VN",
+      "symbol": "HKT.VN",
       "market": "VN",
       "entry_grade": "C",
       "institutional_score": 1.0,
@@ -49,27 +28,59 @@
     },
     {
       "rank": 2,
-      "symbol": "C32.VN",
+      "symbol": "ONE.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.3789128617257522,
+      "institutional_score": 1.0,
       "reason": "Low confidence gate"
     },
     {
       "rank": 3,
-      "symbol": "THD.VN",
+      "symbol": "VVS.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.3441804877491923,
+      "institutional_score": 0.8416096081467528,
       "reason": "Low confidence gate"
     },
     {
       "rank": 4,
+      "symbol": "C32.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 0.44778271083125604,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 5,
+      "symbol": "BSR.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 0.44351866317680294,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 6,
+      "symbol": "THD.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 0.4426783042195769,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 7,
       "symbol": "PNC.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": -0.15963189906540515,
-      "reason": "Weak setup / flow risk"
+      "institutional_score": -0.13316355251265133,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 8,
+      "symbol": "KSV.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": -0.20988189689236203,
+      "reason": "Low confidence gate"
     }
   ],
   "tips": [
