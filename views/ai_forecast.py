@@ -87,6 +87,43 @@ def _format_price(price: float, symbol: str = "", market: str = "") -> str:
         return f"${price:,.2f}"
 
 
+def _is_vn_tw_equity(symbol: str = "", market: str = "") -> bool:
+    """VN/TW cash equities should not be rendered as short-profit setups."""
+    if not symbol:
+        symbol = st.session_state.get("global_symbol", "")
+    if not market:
+        market = st.session_state.get("global_market", "")
+
+    symbol_upper = str(symbol).upper()
+    market_upper = str(market).upper()
+    return (
+        symbol_upper.endswith(".VN")
+        or symbol_upper.endswith(".TW")
+        or symbol_upper.endswith(".TWO")
+        or market_upper in {"VN", "VIETNAM", "VN_STOCK", "TW", "TAIWAN"}
+    )
+
+
+def _bias_side(label: str) -> str:
+    text = str(label).upper()
+    if "BULLISH" in text or "LONG" in text:
+        return "long"
+    if "BEARISH" in text or "SHORT" in text:
+        return "short"
+    return "neutral"
+
+
+def _target_side(current_price: float, target_price: float, neutral_band: float = 0.003) -> str:
+    if current_price <= 0 or not np.isfinite(current_price) or not np.isfinite(target_price):
+        return "neutral"
+    move = (target_price - current_price) / current_price
+    if move > neutral_band:
+        return "long"
+    if move < -neutral_band:
+        return "short"
+    return "neutral"
+
+
 def _get_mozyfin_client():
     """Get Mozyfin client, returns None if API key not configured."""
     if not _MOZYFIN_AVAILABLE:
@@ -883,8 +920,18 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             ready_color = "#94a3b8"
             ready_status = "WAITING"
 
+            neutral_target = p63.get("predicted_price", curr_price)
+            if scalp_intel and scalp_intel.get("step2"):
+                neutral_target = scalp_intel["step2"]
+            short_allowed = not _is_vn_tw_equity(symbol, market)
+            target_side = _target_side(float(curr_price), float(neutral_target))
+            plan_is_bullish = is_bullish or (not is_bearish and target_side == "long")
+            raw_bearish_plan = is_bearish or (not is_bullish and target_side == "short")
+            plan_is_bearish = raw_bearish_plan and short_allowed
+            plan_is_defensive = raw_bearish_plan and not short_allowed
+
             if use_intraday:
-                entry_price = scalp_intel["step1"]
+                entry_price = curr_price if plan_is_defensive else scalp_intel["step1"]
                 tp_price = scalp_intel["step2"]
                 plan_type = "INTRADAY PLAN"
                 
@@ -896,20 +943,24 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 else:
                     atr_h = atr_d * 0.15
                 
-                sl_price = entry_price - (atr_h * 2.0) if is_bullish else entry_price + (atr_h * 2.0)
+                sl_price = entry_price - (atr_h * 2.0) if (plan_is_bullish or plan_is_defensive) else entry_price + (atr_h * 2.0)
             else:
-                if is_bullish:
+                if plan_is_bullish:
                     struct_low = macro_entry * 0.98
                     bull_obs = [ob for ob in smc_state.get('bull_obs', []) if ob['top'] < curr_price]
                     if bull_obs: struct_low = min(ob['bottom'] for ob in bull_obs)
                     sl_price = struct_low - (atr_d * 0.5)
-                    tp_price = vah if vah > curr_price else (curr_price * 1.10)
-                else:
+                    tp_price = max(neutral_target, vah if vah > curr_price else (curr_price * 1.10))
+                elif plan_is_bearish:
                     struct_high = macro_entry * 1.02
                     bear_obs = [ob for ob in smc_state.get('bear_obs', []) if ob['bottom'] > curr_price]
                     if bear_obs: struct_high = max(ob['top'] for ob in bear_obs)
                     sl_price = struct_high + (atr_d * 0.5)
-                    tp_price = val if val < curr_price else (curr_price * 0.90)
+                    tp_price = min(neutral_target, val if val < curr_price else (curr_price * 0.90))
+                else:
+                    entry_price = curr_price
+                    sl_price = curr_price - (atr_d * 1.5)
+                    tp_price = min(neutral_target, val if val < curr_price else (curr_price * 0.95))
 
             # Metrics
             risk = abs(entry_price - sl_price)
@@ -945,9 +996,13 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             else:
                 change_html = ""
 
+            rr_label = "Risk : Reward Ratio" if not plan_is_defensive else "Risk : Downside Ratio"
+            sl_label = "STOP LOSS" if not plan_is_defensive else "RISK FLOOR"
+            tp_label = "TAKE PROFIT (MAX)" if plan_is_bullish else ("SHORT TARGET" if plan_is_bearish else "DOWNSIDE TARGET")
+
             # UI Construction
             ui_html = (
-                f'<div class="rhs-card" style="border-top: 4px solid {"#ffd700" if is_trigger else ("#00E676" if is_bullish else "#FF5252")}; padding-top: 20px;">'
+                f'<div class="rhs-card" style="border-top: 4px solid {"#ffd700" if is_trigger else setup_color}; padding-top: 20px;">'
                 f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">'
                 f'<span style="font-weight:800; font-size:1rem; letter-spacing:1px; color:#fff;">{plan_type}</span>'
                 f'<span style="color:{ready_color}; font-size:0.75rem; font-weight:800; border:1px solid {ready_color}44; padding:3px 10px; border-radius:4px; background:{ready_color}11;">{ready_status}</span>'
@@ -968,7 +1023,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'    {change_html}'
                 f'  </div>'
                 f'  <div style="border-top:1px dashed rgba(255,255,255,0.1); padding-top:12px;">'
-                f'    <div style="font-size:0.65rem; color:#f6ad55; text-transform:uppercase; letter-spacing:1px; font-weight:700;">Risk : Reward Ratio</div>'
+                f'    <div style="font-size:0.65rem; color:#f6ad55; text-transform:uppercase; letter-spacing:1px; font-weight:700;">{rr_label}</div>'
                 f'    <div style="font-size:1.4rem; font-weight:900; color:#f6ad55;">1 : {rr_ratio:.1f}</div>'
                 f'  </div>'
                 f'</div>'
@@ -1024,11 +1079,11 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             ui_html += (
                 f'<div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:15px;">'
                 f'  <div style="background:linear-gradient(to bottom, rgba(255,82,82,0.1), rgba(255,82,82,0.02)); border:1px solid rgba(255,82,82,0.15); border-radius:8px; padding:12px 5px; text-align:center;">'
-                f'    <div style="font-size:0.65rem; color:#FF5252; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">STOP LOSS</div>'
+                f'    <div style="font-size:0.65rem; color:#FF5252; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">{sl_label}</div>'
                 f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(sl_price)}</div>'
                 f'  </div>'
                 f'  <div style="background:linear-gradient(to bottom, rgba(0,230,118,0.1), rgba(0,230,118,0.02)); border:1px solid rgba(0,230,118,0.15); border-radius:8px; padding:12px 5px; text-align:center;">'
-                f'    <div style="font-size:0.65rem; color:#00E676; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">TAKE PROFIT (MAX)</div>'
+                f'    <div style="font-size:0.65rem; color:#00E676; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">{tp_label}</div>'
                 f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(tp_price)}</div>'
                 f'  </div>'
                 f'</div>'
@@ -1063,6 +1118,7 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
     try:
         # Use latest price from real-time quote or fallback to last close
         symbol = st.session_state.get("global_symbol", "ASSET")
+        market = st.session_state.get("global_market", "")
         rt_quote = st.session_state.get(f"rt_quote_{symbol}")
         curr_price = rt_quote.price if rt_quote else df["Close"].iloc[-1]
         atr_d = df["ATR_14"].iloc[-1] if "ATR_14" in df.columns else (curr_price * 0.02)
@@ -1070,12 +1126,22 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
         p1 = predictions.get(1, {})
         # SYNC: If we have scalp_intel, use its bias to drive the Trade Plan (Unified Vision)
         effective_bias = scalp_intel.get("bias", p1.get("bias", "")) if scalp_intel else p1.get("bias", "")
+        p63 = predictions.get(63, {})
+        neutral_target = scalp_intel.get("step2") if scalp_intel and scalp_intel.get("step2") else p63.get("predicted_price", curr_price)
+        short_allowed = not _is_vn_tw_equity(symbol, market)
+        plan_side = _bias_side(effective_bias)
+        if plan_side == "neutral":
+            plan_side = _target_side(float(curr_price), float(neutral_target))
+        if plan_side == "short" and not short_allowed:
+            plan_side = "defensive"
         
-        is_bullish = "BULLISH" in str(effective_bias).upper()
-        setup_label = "BULLISH" if is_bullish else "BEARISH"
-        setup_color = "#00E676" if is_bullish else "#FF5252"
-        setup_icon = "↗" if is_bullish else "↘"
-
+        is_bullish = plan_side == "long"
+        is_bearish = plan_side == "short"
+        is_defensive = plan_side == "defensive"
+        is_neutral = plan_side == "neutral"
+        setup_label = "BULLISH" if is_bullish else "BEARISH" if is_bearish else "DEFENSIVE" if is_defensive else "NEUTRAL"
+        setup_color = "#00E676" if is_bullish else "#FF5252" if is_bearish else "#f6ad55"
+        setup_icon = "UP" if is_bullish else "DOWN" if is_bearish else "WAIT"
         # ➔ SYNC LOGIC: Use Intel SMC (Recent) instead of global smc_state (Long-term)
         # This prevents picking OBs from $10 when price is $36
         target_smc = scalp_intel.get("smc_state", smc_state) if scalp_intel else smc_state
@@ -1682,8 +1748,9 @@ def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
         
         curr_price = df_1h["Close"].iloc[-1]
         # ADVANCED CONSENSUS: Use long-term trend to override neutral daily bias
-        is_bullish = ("BULLISH" in daily_bias) or (long_term_bullish and "BEARISH" not in daily_bias)
-        is_bearish = ("BEARISH" in daily_bias) or (not long_term_bullish and "BULLISH" not in daily_bias)
+        lt_ret = float(p63.get("predicted_return", 0.0))
+        is_bullish = ("BULLISH" in daily_bias) or ((long_term_bullish or lt_ret > 1.0) and "BEARISH" not in daily_bias)
+        is_bearish = ("BEARISH" in daily_bias) or ((lt_ret < -1.0) and "BULLISH" not in daily_bias)
         
         # Phase 1 & 2 (Structure & Goal)
         if is_bullish:
@@ -1691,11 +1758,15 @@ def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
             bull_obs = s_h.get("bull_obs", [])
             step1_price = bull_obs[0]["top"] if bull_obs else (curr_price * 0.99)
             step2_price = p63.get("predicted_price", curr_price * 1.10)
-        else:
+        elif is_bearish:
             # Short Alignment
             bear_obs = s_h.get("bear_obs", [])
             step1_price = bear_obs[0]["bottom"] if bear_obs else (curr_price * 1.01)
             step2_price = p63.get("predicted_price", curr_price * 0.90)
+        else:
+            # Neutral means no directional setup, not an implicit short.
+            step1_price = curr_price
+            step2_price = p63.get("predicted_price", curr_price)
 
         # ➔ NEW: Phase 0 (Immediate Entry) for Daily Trade
         # We look for a breakout of the last 4 hours to catch the move towards Step 1/2 immediately
@@ -1704,7 +1775,7 @@ def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
             # Entry on break of recent 4H High
             step0_price = df_1h["High"].rolling(4).max().iloc[-1]
             if step0_price < curr_price: step0_price = curr_price # Already breaking out
-        else:
+        elif is_bearish:
             # Entry on break of recent 4H Low
             step0_price = df_1h["Low"].rolling(4).min().iloc[-1]
             if step0_price > curr_price: step0_price = curr_price # Already breaking down
