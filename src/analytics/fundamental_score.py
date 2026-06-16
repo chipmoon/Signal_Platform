@@ -35,6 +35,17 @@ import yfinance as yf
 from loguru import logger
 
 
+_FUNDAMENTAL_FIELDS = (
+    "roe",
+    "debt_to_equity",
+    "eps_growth",
+    "pe_ratio",
+    "fcf_yield",
+    "revenue_growth",
+    "profit_margin",
+)
+
+
 # ─── Data Structure ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -109,6 +120,13 @@ def _safe_float(val, default=None) -> Optional[float]:
         return default
 
 
+def _has_any_fundamental_metric(data: dict | None) -> bool:
+    """True only when at least one real fundamental metric is present."""
+    if not data:
+        return False
+    return any(_safe_float(data.get(k)) is not None for k in _FUNDAMENTAL_FIELDS)
+
+
 def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
     """Fetch and calculate all 7 Buffett-style fundamental metrics for VN stocks."""
     base_symbol = symbol.replace('.VN', '').upper()
@@ -154,6 +172,8 @@ def _fetch_vn_fundamentals_from_vnstock(symbol: str) -> dict:
         except BaseException as e:
             err_str = _safe_err(e)
             logger.warning(f"Attempt {attempt+1} failed for {base_symbol} (possibly rate limit/blocked): {err_str}")
+            if isinstance(e, (ImportError, ModuleNotFoundError)):
+                return data
             if attempt < 2:
                 logger.info("Waiting 15 seconds to reset rate limit...")
                 time.sleep(15)
@@ -268,7 +288,7 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
     from src.cache_manager import cache
     cached = cache.get_cached_fundamentals(symbol, market)
     
-    if cached:
+    if cached and _has_any_fundamental_metric(cached):
         fs.roe = _safe_float(cached.get("roe"))
         fs.debt_to_equity = _safe_float(cached.get("debt_to_equity"))
         fs.eps_growth = _safe_float(cached.get("eps_growth"))
@@ -277,13 +297,16 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
         fs.revenue_growth = _safe_float(cached.get("revenue_growth"))
         fs.profit_margin = _safe_float(cached.get("profit_margin"))
         logger.info(f"Loaded fundamentals from cache for {symbol} ({market})")
-    else:
+    elif cached:
+        fs.caveats.append("Cached fundamental payload was empty; ignoring it")
+        cached = None
+    if not cached:
         # 2. Fetch fresh data
         data = None
         if market == "VN":
             data = _fetch_vn_fundamentals_from_vnstock(symbol)
             # Check if we successfully fetched anything
-            if any(v is not None for v in data.values()):
+            if _has_any_fundamental_metric(data):
                 cache.cache_fundamentals(symbol, market, data)
         else:
             try:
@@ -324,12 +347,13 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
                         "revenue_growth": revenue_growth,
                         "profit_margin": profit_margin
                     }
-                    cache.cache_fundamentals(symbol, market, data)
+                    if _has_any_fundamental_metric(data):
+                        cache.cache_fundamentals(symbol, market, data)
             except Exception as e:
                 logger.warning(f"FundamentalScore: could not fetch {yf_ticker}: {e}")
                 fs.caveats.append("Yahoo Finance data unavailable")
                 
-        if data:
+        if _has_any_fundamental_metric(data):
             fs.roe = _safe_float(data.get("roe"))
             fs.debt_to_equity = _safe_float(data.get("debt_to_equity"))
             fs.eps_growth = _safe_float(data.get("eps_growth"))
@@ -338,20 +362,24 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
             fs.revenue_growth = _safe_float(data.get("revenue_growth"))
             fs.profit_margin = _safe_float(data.get("profit_margin"))
         else:
+            fs.grade = "N/A"
+            fs.label = "Fundamental Data Unavailable"
             fs.caveats.append("Fundamental data unavailable (check cache / connections)")
             return fs
 
     # ── Scoring ───────────────────────────────────────────────────────────
     available_fields = 0
     total_possible = 0
+    available_possible = 0
 
     def score_field(value, thresholds, pts_list, field_pts):
         """Return score for a field given thresholds."""
-        nonlocal available_fields, total_possible
+        nonlocal available_fields, total_possible, available_possible
         total_possible += field_pts
         if value is None:
             return 0
         available_fields += 1
+        available_possible += field_pts
         for threshold, pts in zip(thresholds, pts_list):
             if value >= threshold:
                 return pts
@@ -364,6 +392,7 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
     if fs.debt_to_equity is not None:
         available_fields += 1
         total_possible += 15
+        available_possible += 15
         d = fs.debt_to_equity
         if d <= 0.5:
             fs.debt_score = 15
@@ -384,6 +413,7 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
     if fs.pe_ratio is not None and fs.pe_ratio > 0:
         available_fields += 1
         total_possible += 15
+        available_possible += 15
         pe = fs.pe_ratio
         if pe < 15:
             fs.valuation_score = 15
@@ -411,20 +441,26 @@ def compute_fundamental_score(symbol: str, market: str) -> FundamentalScore:
                  fs.valuation_score + fs.fcf_score + fs.revenue_growth_score +
                  fs.margin_score)
 
-    # Scale to 0-100 if not all fields available
-    if total_possible > 0 and available_fields > 0:
-        # Normalize: score / available_possible × 100
-        available_possible = total_possible * (available_fields / 7)
-        fs.total_score = min(100, int(raw_total / max(available_possible, 1) * 100))
-    else:
-        fs.total_score = 0
-
     # Data coverage
     fs.data_coverage = int(available_fields / 7 * 100)
-    if fs.data_coverage < 40:
-        fs.caveats.append("Limited fundamental data — score may not be accurate")
+    if available_fields == 0 or available_possible <= 0:
+        fs.total_score = 0
+        fs.grade = "N/A"
+        fs.label = "Fundamental Data Unavailable"
+        fs.caveats.append("Fundamental data unavailable; score excluded from signal")
+        logger.debug(f"FundamentalScore [{symbol}]: unavailable | Coverage: {fs.data_coverage}%")
+        return fs
 
-    # ── Grade ──────────────────────────────────────────────────────────────
+    fs.total_score = min(100, int(raw_total / max(available_possible, 1) * 100))
+    if fs.data_coverage < 40:
+        fs.total_score = 0
+        fs.grade = "N/A"
+        fs.label = "Insufficient Fundamental Coverage"
+        fs.caveats.append("Limited fundamental data; score excluded from signal")
+        logger.debug(f"FundamentalScore [{symbol}]: insufficient coverage | Score: {fs.total_score}/100 | Coverage: {fs.data_coverage}%")
+        return fs
+
+    # Grade ──────────────────────────────────────────────────────────────
     if fs.total_score >= 85:
         fs.grade, fs.label = "A+", "Exceptional Quality (Buffett-grade)"
     elif fs.total_score >= 70:
