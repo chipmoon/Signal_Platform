@@ -743,6 +743,11 @@ class SmcAnalyzer:
         # ── Signal Generation ────────────────────────────────────────
         df["smc_signal"] = 0
         df["smc_signal_reason"] = ""
+        df["smc_entry_signal"] = 0
+        df["smc_entry_reason"] = ""
+        df["smc_entry_zone_top"] = np.nan
+        df["smc_entry_zone_bottom"] = np.nan
+        df["smc_entry_type"] = ""
 
         score = df["smc_score"]
         struct = df["smc_structure"]
@@ -750,6 +755,54 @@ class SmcAnalyzer:
         # ── Stochastic Filter Masks ───────────────────────────────
         stoch_not_ob = df["stoch_status"] != "OVERBOUGHT"  # Veto buy if overbought
         stoch_not_os = df["stoch_status"] != "OVERSOLD"    # Veto sell if oversold
+
+        pos = np.arange(n)
+        open_arr = df["Open"].to_numpy(dtype=float)
+        high_arr = df["High"].to_numpy(dtype=float)
+        low_arr = df["Low"].to_numpy(dtype=float)
+        close_arr = df["Close"].to_numpy(dtype=float)
+        bullish_close = close_arr >= open_arr
+        stoch_ok_arr = stoch_not_ob.to_numpy(dtype=bool)
+
+        def _mark_entry(mask: np.ndarray, reason: str, zone_top: float, zone_bottom: float, zone_type: str) -> None:
+            if not bool(mask.any()):
+                return
+            unused = df["smc_entry_signal"].to_numpy(dtype=int) == 0
+            idx = df.index[mask & unused]
+            if len(idx) == 0:
+                return
+            idx = idx[:1]
+            df.loc[idx, "smc_entry_signal"] = 1
+            df.loc[idx, "smc_entry_reason"] = reason
+            df.loc[idx, "smc_entry_zone_top"] = float(zone_top)
+            df.loc[idx, "smc_entry_zone_bottom"] = float(zone_bottom)
+            df.loc[idx, "smc_entry_type"] = zone_type
+
+        for fvg in bull_fvgs:
+            after_zone_confirmed = pos > (int(fvg.candle_idx) + 1)
+            wick_touch = (low_arr <= float(fvg.top)) & (high_arr >= float(fvg.bottom))
+            reclaim = close_arr >= float(fvg.bottom)
+            fvg_retest = after_zone_confirmed & wick_touch & reclaim & bullish_close & stoch_ok_arr
+            _mark_entry(
+                fvg_retest,
+                "BULL_FVG_RETEST: Wick retest of bullish FVG with bullish close confirmation",
+                fvg.top,
+                fvg.bottom,
+                "FVG",
+            )
+
+        for ob in bull_obs:
+            after_zone_confirmed = pos > int(ob.candle_idx)
+            wick_touch = (low_arr <= float(ob.top)) & (high_arr >= float(ob.bottom))
+            reclaim = close_arr >= float(ob.bottom)
+            ob_retest = after_zone_confirmed & wick_touch & reclaim & bullish_close & stoch_ok_arr
+            _mark_entry(
+                ob_retest,
+                "BULL_OB_RETEST: Wick retest of bullish order block with bullish close confirmation",
+                ob.top,
+                ob.bottom,
+                "OB",
+            )
 
         # Strong bullish: in bull OB + bullish structure + positive score
         # + Stochastic NOT overbought (momentum filter)
@@ -774,14 +827,14 @@ class SmcAnalyzer:
 
         # FVG bullish fill + Stochastic filter
         fvg_buy = (
-            df["smc_in_bull_fvg"]
-            & (score >= 0.1)
+            (df["smc_entry_signal"] == 1)
             & (struct != "Bearish")
             & (df["smc_signal"] == 0)
-            & stoch_not_ob
         )
         df.loc[fvg_buy, "smc_signal"] = 1
         df.loc[fvg_buy, "smc_signal_reason"] = "BULL_FVG: Price drawn to unfilled Bullish FVG (Stoch ✅)"
+
+        df.loc[fvg_buy, "smc_signal_reason"] = df.loc[fvg_buy, "smc_entry_reason"]
 
         # Bear signals + Stochastic filter (veto sell when oversold)
         sell_mask = (
