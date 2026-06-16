@@ -3153,15 +3153,27 @@ def render():
 
             # Historical SMC BUY entry markers
             if show_smc and not smc_signal_df.empty and "smc_signal" in smc_signal_df.columns:
-                _entry_df = smc_signal_df[smc_signal_df["smc_signal"] == 1].copy()
+                if "smc_entry_signal" in smc_signal_df.columns:
+                    _entry_df = smc_signal_df[smc_signal_df["smc_entry_signal"] == 1].copy()
+                    _reason_col = "smc_entry_reason"
+                else:
+                    _entry_df = smc_signal_df[smc_signal_df["smc_signal"] == 1].copy()
+                    _reason_col = "smc_signal_reason"
                 if not _entry_df.empty:
                     _entry_df = _entry_df.tail(60)
                     _entry_y = _entry_df["Low"].astype(float) * 0.985
                     _entry_text = (
-                        _entry_df["smc_signal_reason"]
-                        if "smc_signal_reason" in _entry_df.columns
+                        _entry_df[_reason_col]
+                        if _reason_col in _entry_df.columns
                         else pd.Series(["SMC BUY"] * len(_entry_df), index=_entry_df.index)
                     )
+                    if "smc_entry_zone_bottom" in _entry_df.columns and "smc_entry_zone_top" in _entry_df.columns:
+                        _entry_text = _entry_text.astype(str) + (
+                            "<br>Zone="
+                            + _entry_df["smc_entry_zone_bottom"].map(lambda v: f"{float(v):,.2f}" if pd.notna(v) else "N/A")
+                            + "-"
+                            + _entry_df["smc_entry_zone_top"].map(lambda v: f"{float(v):,.2f}" if pd.notna(v) else "N/A")
+                        )
                     fig.add_trace(go.Scatter(
                         x=_entry_df["Date"],
                         y=_entry_y,
