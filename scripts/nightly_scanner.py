@@ -77,7 +77,8 @@ except ImportError:
     logger.warning("PositionSizer not available — position sizing will be skipped")
 
 # ── Stock universes ───────────────────────────────────────────────────────────
-from src.plugins.taiwan import TAIWAN_STOCKS  # dict: symbol -> {Name, Sector}
+from src.plugins import registry
+from src.plugins.taiwan import TAIWAN_STOCKS  # curated fallback: symbol -> {Name, Sector}
 
 VN_SYMBOLS = [
     # Banks
@@ -261,10 +262,12 @@ def score_fundamental(symbol: str, market: str) -> tuple[float, int, str]:
     """
     try:
         fs = compute_fundamental_score(symbol, market)
+        if fs.data_coverage < 40 or str(fs.grade).upper() == "N/A":
+            return 0.5, 0, "N/A"
         return fs.total_score / 100.0, fs.total_score, fs.grade
     except Exception as e:
         logger.debug(f"  {symbol} fundamental error: {e}")
-        return 0.0, 0, "N/A"
+        return 0.5, 0, "N/A"
 
 
 def score_wyckoff_smc(df: pd.DataFrame) -> tuple[float, str, float]:
@@ -514,8 +517,20 @@ def _build_universe(market_filter: Optional[str]) -> list[tuple[str, str, str, s
     universe = []
 
     if market_filter in (None, "TW"):
-        for sym, info in TAIWAN_STOCKS.items():
-            universe.append((sym, "TW", info.get("Name", sym), info.get("Sector", "Other")))
+        tw_assets = []
+        try:
+            provider = registry.get("TW")
+            if provider:
+                tw_assets = provider.search_assets("", limit=5000)
+        except Exception as exc:
+            logger.debug(f"TW universe provider load failed: {exc}")
+
+        if tw_assets:
+            for asset in tw_assets:
+                universe.append((asset.symbol, "TW", asset.name, asset.sector or "Other"))
+        else:
+            for sym, info in TAIWAN_STOCKS.items():
+                universe.append((sym, "TW", info.get("Name", sym), info.get("Sector", "Other")))
 
     if market_filter in (None, "VN"):
         for sym in VN_SYMBOLS:

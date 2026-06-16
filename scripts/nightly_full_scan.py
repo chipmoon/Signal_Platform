@@ -26,15 +26,508 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from loguru import logger
+from src.alerts.telegram import TelegramAlertSender
+from src.data.analysis_store import AnalysisStore
+from src.plugins import registry
+from src.strategies.elliott_wave import ElliottWaveAnalyzer
+from src.analytics.fundamental_score import get_fundamental_dict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 SCAN_RESULTS_PATH = DATA_DIR / "nightly_scan_results.json"
 SCAN_META_PATH = DATA_DIR / "nightly_scan_meta.json"
+NIGHTLY_REPORT_PATH = DATA_DIR / "nightly_telegram_snapshot.json"
+
+
+def _safe_float(v: object, default: float = 0.0) -> float:
+    try:
+        out = float(v)
+        if out != out:  # NaN
+            return default
+        return out
+    except Exception:
+        return default
+
+
+def _derive_grade(row: dict) -> str:
+    grade = str(row.get("entry_quality_grade", "")).strip().upper()
+    if grade in {"A", "B", "C"}:
+        return grade
+
+    # Fallback for legacy rows without explicit grade.
+    rec = str(row.get("recommendation", "WATCH")).upper()
+    score = _safe_float(row.get("institutional_score", 0.0))
+    conf = _safe_float(row.get("confidence_boosted", 0.0))
+    qmf_signal = int(_safe_float(row.get("qmf_signal", 0)))
+    veto = bool(row.get("veto", False))
+    if veto:
+        return "C"
+    if rec in {"STRONG BUY", "BUY"} and score >= 0.35 and conf >= 0.20 and qmf_signal >= 0:
+        return "A"
+    if score >= 0.12 and conf >= 0.08 and qmf_signal >= 0:
+        return "B"
+    return "C"
+
+
+def _fmt_pick_line(i: int, row: dict) -> str:
+    sym = str(row.get("symbol", "N/A"))
+    rec = str(row.get("recommendation", "WATCH"))
+    score = _safe_float(row.get("institutional_score", 0.0))
+    up1 = _safe_float(row.get("pred_21d_ret", 0.0))
+    up3 = _safe_float(row.get("pred_63d_ret", 0.0))
+    return f"{i}. <b>{sym}</b> | {rec} | inst={score:.3f} | 1M={up1:+.1f}% | 3M={up3:+.1f}%"
+
+
+def _calc_entry_stop_target(row: dict) -> tuple[float, float, float, float]:
+    """Derive entry/stop/target with robust fallbacks for nightly alerts."""
+    entry = _safe_float(row.get("last_close", 0.0))
+    if entry <= 0:
+        entry = max(_safe_float(row.get("ai_target_1d", 0.0)), 0.01)
+
+    pred_63d = _safe_float(row.get("pred_63d_ret", 0.0))
+    target = _safe_float(row.get("wyckoff_target", 0.0))
+    if target <= 0:
+        target = entry * (1.0 + (pred_63d / 100.0))
+    if target <= 0:
+        target = entry
+
+    rr = _safe_float(row.get("wyckoff_rr", 0.0))
+    if rr > 0 and target > entry:
+        stop = entry - ((target - entry) / rr)
+    else:
+        conf = _safe_float(row.get("confidence_boosted", 0.0))
+        qmf_sig = int(_safe_float(row.get("qmf_signal", 0)))
+        stop_pct = 0.06
+        if conf >= 0.25:
+            stop_pct = 0.05
+        elif conf < 0.15:
+            stop_pct = 0.07
+        if qmf_sig < 0:
+            stop_pct = min(stop_pct + 0.01, 0.09)
+        stop = entry * (1.0 - stop_pct)
+
+    # Safety clamps to avoid malformed values in notifications
+    stop = max(stop, 0.01)
+    if stop >= entry:
+        stop = entry * 0.95
+    if target <= entry:
+        target = entry * (1.0 + max(pred_63d, 5.0) / 100.0)
+
+    rr_eff = (target - entry) / max(entry - stop, 1e-9)
+    return entry, stop, target, rr_eff
+
+
+def _fmt_pick_line_mobile(i: int, row: dict) -> str:
+    """Compact 2-line format optimized for small phone screens."""
+    sym = str(row.get("symbol", "N/A"))
+    score = _safe_float(row.get("institutional_score", 0.0))
+    up1 = _safe_float(row.get("pred_21d_ret", 0.0))
+    entry, stop, target, rr_eff = _calc_entry_stop_target(row)
+    line1 = f"<b>{i}) {sym}</b> | S:{score:.2f} | 1M:{up1:+.1f}%"
+    line2 = f"E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}"
+    return f"{line1}\n<code>{line2}</code>"
+
+
+def _build_nightly_suggestions(ranked: list[dict], grade_a: list[dict], grade_c: list[dict]) -> list[str]:
+    tips: list[str] = []
+    total = len(ranked)
+    if total == 0:
+        return ["Không có dữ liệu hợp lệ hôm nay; ưu tiên đứng ngoài và kiểm tra nguồn feed."]
+
+    c_ratio = len(grade_c) / total
+    if len(grade_a) <= 2:
+        tips.append("Ít Grade A: giảm tần suất vào lệnh mới, ưu tiên bảo toàn vốn.")
+    if c_ratio >= 0.50:
+        tips.append("Grade C chiếm cao: thị trường nhiễu/phân phối, chỉ giữ setup mạnh.")
+
+    missing_fields = 0
+    for r in ranked:
+        if _safe_float(r.get("last_close", 0.0)) <= 0 or _safe_float(r.get("institutional_score", 0.0)) == 0.0:
+            missing_fields += 1
+    if missing_fields > 0:
+        tips.append(f"Có {missing_fields} mã thiếu dữ liệu lõi; cần kiểm tra cache/API trước giờ mở cửa.")
+
+    veto_count = sum(1 for r in ranked if bool(r.get("veto", False)))
+    if veto_count >= max(3, int(0.25 * total)):
+        tips.append("Nhiều mã bị veto: tránh FOMO, chờ xác nhận thêm 1 phiên.")
+
+    if not tips:
+        tips.append("Điều kiện dữ liệu ổn định; tập trung Top Grade A, quản trị rủi ro theo SL.")
+    return tips[:3]
+
+
+def _normalize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    rename_map = {
+        "date": "Date",
+        "datetime": "Date",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "volume": "Volume",
+        "adj close": "Close",
+        "adj_close": "Close",
+    }
+    out.columns = [str(c) for c in out.columns]
+    for c in list(out.columns):
+        lc = c.strip().lower()
+        if lc in rename_map:
+            out = out.rename(columns={c: rename_map[lc]})
+    if "Date" not in out.columns:
+        out = out.reset_index()
+        if "index" in out.columns:
+            out = out.rename(columns={"index": "Date"})
+    if "Date" not in out.columns:
+        return pd.DataFrame()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out = out.dropna(subset=["Date"]).sort_values("Date")
+    need = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in need if c not in out.columns]
+    if missing:
+        return pd.DataFrame()
+    return out[["Date", "Open", "High", "Low", "Close", "Volume"]]
+
+
+def _weekly_from_daily(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    norm = _normalize_ohlcv_columns(df)
+    if norm.empty:
+        return pd.DataFrame()
+    wk = (
+        norm.set_index("Date")
+        .resample("W")
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+        .dropna()
+        .reset_index()
+    )
+    return wk
+
+
+def _elliott_strategic_tag(symbol: str, market: str) -> tuple[str, str]:
+    """
+    Return (tag, detail) for weekly Elliott strategic context:
+    - OK
+    - CAUTION_WAVE5
+    - STRATEGIC_ONLY
+    - NO_DATA / ERROR
+    """
+    try:
+        provider = registry.get(market)
+        if not provider:
+            return "NO_DATA", "provider_unavailable"
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=900)).strftime("%Y-%m-%d")
+        daily = provider.get_price_data(symbol, start, end, interval="1d")
+        if daily is None or daily.empty:
+            return "NO_DATA", "no_daily_data"
+        wk = _weekly_from_daily(daily)
+        if wk.empty:
+            return "NO_DATA", "weekly_resample_failed"
+        ew = ElliottWaveAnalyzer().get_current_state(wk)
+        wave = str(ew.get("current_wave", "?"))
+        conf = _safe_float(ew.get("confidence", 0.0))
+        if wave == "5" and conf >= 60.0:
+            return "CAUTION_WAVE5", f"wave=5 conf={conf:.0f}%"
+        if 60.0 <= conf < 75.0:
+            return "STRATEGIC_ONLY", f"wave={wave} conf={conf:.0f}%"
+        return "OK", f"wave={wave} conf={conf:.0f}%"
+    except Exception as exc:
+        return "ERROR", str(exc)
+
+
+def _fundamental_quality(symbol: str, market: str) -> tuple[str, int]:
+    """Return (grade, total_score) from AI forecast fundamental module."""
+    try:
+        f = get_fundamental_dict(symbol=symbol, market=market)
+        grade = str(f.get("grade", "N/A")).strip().upper()
+        score = int(_safe_float(f.get("total_score", 0.0)))
+        if grade == "N/A" or int(_safe_float(f.get("data_coverage", 0))) < 40:
+            return "N/A", 0
+        return grade if grade else "N/A", score
+    except Exception:
+        return "N/A", 0
+
+
+def _save_nightly_snapshot(payload: dict) -> None:
+    try:
+        NIGHTLY_REPORT_PATH.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        logger.info(f"Nightly snapshot saved: {NIGHTLY_REPORT_PATH.name}")
+    except Exception as exc:
+        logger.warning(f"Nightly snapshot save failed: {exc}")
+
+
+def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope: str = "VN") -> bool:
+    sender = TelegramAlertSender()
+    telegram_enabled = sender.is_enabled
+    if not telegram_enabled:
+        logger.warning("Telegram not configured; generate snapshot without sending messages.")
+    if not results:
+        _save_nightly_snapshot(
+            {
+                "generated_at": datetime.now().isoformat(),
+                "scan_date": datetime.now().strftime("%Y-%m-%d"),
+                "market_scope": market_scope,
+                "total_candidates": 0,
+                "counts": {"grade_a_raw": 0, "grade_b_raw": 0, "grade_c_raw": 0, "top_a_sent": 0},
+                "top_a": [],
+                "grade_c_watchout": [],
+                "tips": ["Không có dữ liệu hợp lệ hôm nay; đứng ngoài và kiểm tra dữ liệu."],
+            }
+        )
+        if telegram_enabled:
+            return sender.send_text("<b>🌙 Nightly Alpha Scan</b>\n\nNo candidates found today.")
+        return False
+
+    ranked = sorted(results, key=lambda x: _safe_float(x.get("institutional_score", -999)), reverse=True)
+    grade_a = [r for r in ranked if _derive_grade(r) == "A"]
+    grade_c = [r for r in ranked if _derive_grade(r) == "C"]
+
+    # Mobile-friendly constraint: keep it short and highly scannable.
+    show_a = grade_a[:10]  # Tactical Grade A from scanner.
+    show_c = grade_c[:8]
+    tactical_a_count = len(show_a)
+
+    strategic_overlay: dict[str, dict] = {}
+    for row in show_a:
+        sym = str(row.get("symbol", ""))
+        mkt = str(row.get("market", "VN"))
+        tag, detail = _elliott_strategic_tag(sym, mkt)
+        strategic_overlay[sym] = {"tag": tag, "detail": detail}
+
+    date_tag = datetime.now().strftime("%Y-%m-%d")
+    grade_b = [r for r in ranked if _derive_grade(r) == "B"]
+    caution_wave5 = sum(1 for r in show_a if strategic_overlay.get(str(r.get("symbol", "")), {}).get("tag") == "CAUTION_WAVE5")
+    strategic_only = sum(1 for r in show_a if strategic_overlay.get(str(r.get("symbol", "")), {}).get("tag") == "STRATEGIC_ONLY")
+    summary = (
+        f"<b>🌙 NIGHTLY ALPHA SCAN — {date_tag}</b>\n\n"
+        f"Total: <b>{len(ranked)}</b> | A:<b>{len(grade_a)}</b> B:<b>{len(grade_b)}</b> C:<b>{len(grade_c)}</b>\n"
+        f"Focus: <b>Top 10 Grade A</b> + Cảnh báo Grade C\n"
+        f"Strategic EW check (Top A): Wave5 Caution=<b>{caution_wave5}</b>, StrategicOnly=<b>{strategic_only}</b>"
+    )
+    if telegram_enabled and not sender.send_text(summary):
+        return False
+
+    snapshot_a: list[dict] = []
+    if show_a:
+        a_lines_list: list[str] = []
+        for i, r in enumerate(show_a, 1):
+            sym = str(r.get("symbol", "N/A"))
+            mkt = str(r.get("market", "VN"))
+            overlay = strategic_overlay.get(sym, {"tag": "NO_DATA", "detail": "n/a"})
+            tag = str(overlay.get("tag", "NO_DATA"))
+            fund_grade, fund_score = _fundamental_quality(sym, mkt)
+            entry, stop, target, rr_eff = _calc_entry_stop_target(r)
+            score = _safe_float(r.get("institutional_score", 0.0))
+            up1 = _safe_float(r.get("pred_21d_ret", 0.0))
+            strat = "EW:OK"
+            final_grade = "A"
+            action_hint = "can add"
+            consensus = "BUY"
+            if tag == "CAUTION_WAVE5":
+                strat = "EW:Wave5⚠"
+                final_grade = "B"
+                action_hint = "no chase"
+                consensus = "WATCH_PULLBACK"
+            elif tag == "STRATEGIC_ONLY":
+                strat = "EW:Strategic⚠"
+                final_grade = "B"
+                action_hint = "wait confirm"
+                consensus = "WATCH_CONFIRM"
+            elif tag in {"NO_DATA", "ERROR"}:
+                strat = "EW:N/A"
+                action_hint = "small size"
+                consensus = "WATCH_RISK"
+            if fund_grade in {"D", "F"}:
+                consensus = "REDUCE_RISK"
+            line1 = f"<b>{i}) {sym}</b> | G:{final_grade} | F:{fund_grade} | S:{score:.2f} | 1M:{up1:+.1f}%"
+            line2 = f"E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}"
+            line3 = f"{strat} | {action_hint} | {consensus}"
+            a_lines_list.append(f"{line1}\n<code>{line2}</code>\n<i>{line3}</i>")
+            snapshot_a.append(
+                {
+                    "rank": i,
+                    "symbol": sym,
+                    "market": str(r.get("market", "")),
+                    "entry_grade_tactical": "A",
+                    "entry_grade_final": final_grade,
+                    "strategic_tag": tag,
+                    "strategic_detail": str(overlay.get("detail", "")),
+                    "fundamental_grade": fund_grade,
+                    "fundamental_score": fund_score,
+                    "consensus_action": consensus,
+                    "recommendation": str(r.get("recommendation", "WATCH")),
+                    "institutional_score": score,
+                    "pred_21d_ret": up1,
+                    "pred_63d_ret": _safe_float(r.get("pred_63d_ret", 0.0)),
+                    "entry": entry,
+                    "stop_loss": stop,
+                    "target": target,
+                    "rr": rr_eff,
+                }
+            )
+        a_lines = "\n\n".join(a_lines_list)
+        msg_a = (
+            "<b>✅ TOP 10 TACTICAL A — đã check Strategic (Elliott)</b>\n"
+            "<i>G = Final entry grade (sau lớp strategic), EW = bối cảnh tuần</i>\n\n"
+            f"{a_lines}"
+        )
+    else:
+        msg_a = "<b>✅ TOP 10 TACTICAL A</b>\n\nKhông có Grade A hôm nay."
+    if telegram_enabled and not sender.send_text(msg_a):
+        return False
+
+    snapshot_c: list[dict] = []
+    if show_c:
+        c_lines = []
+        for i, r in enumerate(show_c, 1):
+            sym = str(r.get("symbol", "N/A"))
+            score = _safe_float(r.get("institutional_score", 0.0))
+            reason = str(r.get("veto_reason", "")).strip()
+            if not reason:
+                reason = "Weak setup / flow risk"
+            c_lines.append(f"{i}) <b>{sym}</b> | S:{score:.2f} | {reason}")
+            snapshot_c.append(
+                {
+                    "rank": i,
+                    "symbol": sym,
+                    "market": str(r.get("market", "")),
+                    "entry_grade": "C",
+                    "institutional_score": score,
+                    "reason": reason,
+                }
+            )
+        msg_c = "<b>⚠️ GRADE C — Tránh vào mới</b>\n\n" + "\n".join(c_lines)
+    else:
+        msg_c = "<b>⚠️ GRADE C — Tránh vào mới</b>\n\nKhông có mã Grade C nổi bật."
+    if telegram_enabled and not sender.send_text(msg_c):
+        return False
+
+    tips = _build_nightly_suggestions(ranked, grade_a, grade_c)
+    tips_msg = "<b>💡 Gợi ý sau kiểm tra dữ liệu đêm</b>\n\n" + "\n".join(f"• {t}" for t in tips)
+    if telegram_enabled and not sender.send_text(tips_msg):
+        return False
+
+    _save_nightly_snapshot(
+        {
+            "generated_at": datetime.now().isoformat(),
+            "scan_date": date_tag,
+            "market_scope": market_scope,
+            "total_candidates": len(ranked),
+            "counts": {
+                "grade_a_raw": len(grade_a),
+                "grade_b_raw": len(grade_b),
+                "grade_c_raw": len(grade_c),
+                "top_a_sent": tactical_a_count,
+                "wave5_caution_in_top_a": caution_wave5,
+                "strategic_only_in_top_a": strategic_only,
+            },
+            "notes": {
+                "grade_definition": "Entry Grade in scanner is tactical (daily 1-3M setup), not fundamental grade.",
+                "strategic_definition": "Elliott weekly layer adds caution when Wave 5 / strategic-only context appears.",
+                "consensus_definition": "Consensus Action combines tactical entry grade + Elliott strategic tag + fundamental quality.",
+            },
+            "top_a": snapshot_a,
+            "grade_c_watchout": snapshot_c,
+            "tips": tips,
+        }
+    )
+
+    # Optional: Taiwan hidden gems section for VN_TW / TW scans.
+    if market_scope in {"VN_TW", "TW", "ALL"}:
+        tw_rows = [r for r in ranked if str(r.get("market", "")).upper() == "TW"]
+        if tw_rows:
+            gems = []
+            for r in tw_rows:
+                grade = _derive_grade(r)
+                score = _safe_float(r.get("institutional_score", 0.0))
+                conf = _safe_float(r.get("confidence_boosted", 0.0))
+                up3 = _safe_float(r.get("pred_63d_ret", 0.0))
+                stoch = str(r.get("stoch_state", "NEUTRAL")).upper()
+                qmf = int(_safe_float(r.get("qmf_signal", 0)))
+                if (
+                    grade in {"A", "B"}
+                    and score >= 0.12
+                    and score <= 0.85
+                    and conf >= 0.03
+                    and up3 >= 12.0
+                    and stoch != "OVERBOUGHT"
+                    and qmf >= 0
+                    and not bool(r.get("veto", False))
+                ):
+                    gems.append(r)
+
+            gems = sorted(
+                gems,
+                key=lambda x: (
+                    _safe_float(x.get("pred_63d_ret", 0.0)),
+                    _safe_float(x.get("institutional_score", 0.0)),
+                ),
+                reverse=True,
+            )[:5]
+            if gems:
+                g_lines = []
+                for i, r in enumerate(gems, 1):
+                    sym = str(r.get("symbol", "N/A"))
+                    score = _safe_float(r.get("institutional_score", 0.0))
+                    up3 = _safe_float(r.get("pred_63d_ret", 0.0))
+                    entry, stop, target, rr_eff = _calc_entry_stop_target(r)
+                    g_lines.append(
+                        f"{i}) <b>{sym}</b> | S:{score:.2f} | 3M:{up3:+.1f}%\n"
+                        f"<code>E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}</code>"
+                    )
+                gems_msg = "<b>💎 Taiwan Hidden Gems (Top 5)</b>\n\n" + "\n\n".join(g_lines)
+                if telegram_enabled and not sender.send_text(gems_msg):
+                    return False
+            else:
+                fallback = []
+                for r in tw_rows:
+                    grade = _derive_grade(r)
+                    stoch = str(r.get("stoch_state", "NEUTRAL")).upper()
+                    qmf = int(_safe_float(r.get("qmf_signal", 0)))
+                    if grade in {"A", "B"} and not bool(r.get("veto", False)) and stoch != "OVERBOUGHT" and qmf >= 0:
+                        fallback.append(r)
+                fallback = sorted(
+                    fallback,
+                    key=lambda x: (
+                        _safe_float(x.get("confidence_boosted", 0.0)),
+                        _safe_float(x.get("institutional_score", 0.0)),
+                    ),
+                    reverse=True,
+                )[:5]
+                if fallback:
+                    f_lines = []
+                    for i, r in enumerate(fallback, 1):
+                        sym = str(r.get("symbol", "N/A"))
+                        grade = _derive_grade(r)
+                        score = _safe_float(r.get("institutional_score", 0.0))
+                        conf = _safe_float(r.get("confidence_boosted", 0.0))
+                        up3 = _safe_float(r.get("pred_63d_ret", 0.0))
+                        entry, stop, target, rr_eff = _calc_entry_stop_target(r)
+                        f_lines.append(
+                            f"{i}) <b>{sym}</b> | {grade} | S:{score:.2f} | C:{conf:.2f} | 3M:{up3:+.1f}%\n"
+                            f"<code>E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}</code>"
+                        )
+                    fallback_msg = (
+                        "<b>🧭 Taiwan Setup Watchlist (Fallback)</b>\n"
+                        "<i>Không có gem đúng bộ lọc chặt; đây là A/B tốt nhất để theo dõi.</i>\n\n"
+                        + "\n\n".join(f_lines)
+                    )
+                    if telegram_enabled and not sender.send_text(fallback_msg):
+                        return False
+    return telegram_enabled
 
 
 def _fetch_full_vn_universe() -> list[str]:
@@ -70,7 +563,11 @@ def _fetch_full_vn_universe() -> list[str]:
         return VN_UNIVERSE_EXTENDED
 
 
-def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
+def _run_full_scan(
+    vn_symbols: list[str] | None = None,
+    top_n: int = 20,
+    market_scope: str = "VN",
+) -> list[dict]:
     """
     Run AlphaScannerEngine with nightly-optimized config:
     - Shuffles symbols to avoid alphabetical bias (A-B dominating)
@@ -84,10 +581,11 @@ def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
     original_config = scanner_mod.SCAN_CONFIG.copy()
 
     try:
-        # Shuffle to cover all alphabet ranges equally
-        shuffled = vn_symbols[:]
-        random.shuffle(shuffled)
-        scanner_mod.VN_UNIVERSE_EXTENDED = shuffled
+        if vn_symbols:
+            # Shuffle to cover all alphabet ranges equally
+            shuffled = vn_symbols[:]
+            random.shuffle(shuffled)
+            scanner_mod.VN_UNIVERSE_EXTENDED = shuffled
 
         # Override timeouts for nightly batch (no UI waiting)
         scanner_mod.SCAN_CONFIG = {
@@ -104,7 +602,13 @@ def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
             "tier2_top_n": top_n * 3,
         }
 
-        logger.info(f"Running full scan: {len(vn_symbols)} VN symbols (shuffled, 30min budget)...")
+        if vn_symbols:
+            logger.info(
+                f"Running nightly scan scope={market_scope}: "
+                f"{len(vn_symbols)} VN symbols (shuffled, 30min budget)..."
+            )
+        else:
+            logger.info(f"Running nightly scan scope={market_scope} (30min budget)...")
 
         from src.strategies.alpha_scanner import AlphaScannerEngine
 
@@ -118,7 +622,7 @@ def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
         engine = AlphaScannerEngine(
             extended_universe=True,
             commodities=False,
-            market_scope="VN",
+            market_scope=market_scope,
         )
         results = engine.scan_universe(progress_callback=_progress)
 
@@ -126,13 +630,21 @@ def _run_full_scan(vn_symbols: list[str], top_n: int = 20) -> list[dict]:
         logger.success(f"Scan complete: {len(results)} candidates in {elapsed}s")
 
         results.sort(key=lambda x: x.get("institutional_score", -999), reverse=True)
+
+        scope = (market_scope or "VN").upper()
+        if scope == "VN_TW":
+            vn = [r for r in results if str(r.get("market", "")).upper() == "VN"][:top_n]
+            tw = [r for r in results if str(r.get("market", "")).upper() == "TW"][:top_n]
+            mixed = vn + tw
+            mixed.sort(key=lambda x: x.get("institutional_score", -999), reverse=True)
+            return mixed
         return results[:top_n]
 
     finally:
         scanner_mod.VN_UNIVERSE_EXTENDED = original_extended
         scanner_mod.SCAN_CONFIG = original_config
 
-def _save_results(results: list[dict], top_n: int) -> None:
+def _save_results(results: list[dict], top_n: int, market_scope: str = "VN") -> None:
     """Save scan results as JSON for Streamlit Cloud to read."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -158,6 +670,7 @@ def _save_results(results: list[dict], top_n: int) -> None:
         "generated_at": datetime.now().isoformat(),
         "generated_at_readable": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "top_n": top_n,
+        "market_scope": market_scope,
         "total_candidates": len(clean),
         "scan_date": datetime.now().strftime("%Y-%m-%d"),
         "symbols": [r.get("symbol", "") for r in clean],
@@ -167,6 +680,22 @@ def _save_results(results: list[dict], top_n: int) -> None:
         encoding="utf-8"
     )
     logger.success(f"Saved {len(clean)} results → {SCAN_RESULTS_PATH.name}")
+
+
+def _sync_analysis_db() -> None:
+    """Sync newly written nightly JSON into persistent query store."""
+    try:
+        store = AnalysisStore()
+        out = store.sync_from_json()
+        if out.get("ok"):
+            logger.success(
+                f"Analysis DB synced: backend={out.get('backend')} "
+                f"| inserted={out.get('inserted')} | scan_date={out.get('scan_date')}"
+            )
+        else:
+            logger.warning(f"Analysis DB sync failed: {out}")
+    except Exception as exc:
+        logger.warning(f"Analysis DB sync exception: {exc}")
 
 
 def _git_push() -> bool:
@@ -204,62 +733,76 @@ def _git_push() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nightly full VN alpha scan")
+    parser = argparse.ArgumentParser(description="Nightly multi-market alpha scan")
     parser.add_argument("--push", action="store_true", help="Push results to GitHub")
     parser.add_argument("--top", type=int, default=20, help="Top N results to save (default: 20)")
     parser.add_argument("--dry-run", action="store_true", help="Run scan but don't save")
     parser.add_argument("--no-fetch", action="store_true", help="Use extended hardcoded list only")
+    parser.add_argument(
+        "--market-scope",
+        type=str,
+        default="VN",
+        choices=["VN", "TW", "VN_TW", "ALL"],
+        help="Nightly scan scope. VN_TW is recommended for Taiwan hidden gems.",
+    )
     args = parser.parse_args()
+    scope = (args.market_scope or "VN").upper()
 
     logger.info("=" * 60)
-    logger.info(f"Nightly VN Alpha Scan — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Nightly Alpha Scan [{scope}] — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    # Step 1: Get full universe
-    if args.no_fetch:
-        from src.strategies.alpha_scanner import VN_UNIVERSE_EXTENDED
-        vn_symbols = VN_UNIVERSE_EXTENDED
-        logger.info(f"Using hardcoded extended list: {len(vn_symbols)} symbols")
+    vn_symbols: list[str] | None = None
+    includes_vn = scope in {"VN", "VN_TW", "ALL"}
+
+    # Step 1: Get VN universe (only when scan scope includes VN)
+    if includes_vn:
+        if args.no_fetch:
+            from src.strategies.alpha_scanner import VN_UNIVERSE_EXTENDED
+            vn_symbols = VN_UNIVERSE_EXTENDED
+            logger.info(f"Using hardcoded extended VN list: {len(vn_symbols)} symbols")
+        else:
+            vn_symbols = _fetch_full_vn_universe()
+
+        # Prefetch VN OHLCV cache (feeds scanner's cache)
+        logger.info("Pre-fetching VN OHLCV cache...")
+        try:
+            import importlib
+            cache_script = importlib.util.spec_from_file_location(
+                "nightly_vn_cache",
+                str(PROJECT_ROOT / "scripts" / "nightly_vn_cache.py")
+            )
+            cache_mod = importlib.util.module_from_spec(cache_script)
+            # Override symbols with full list
+            cache_mod_symbols = vn_symbols
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+            from scripts.nightly_vn_cache import (
+                fetch_with_vnstock, fetch_with_yfinance, save_cache,
+                update_stock_list_cache
+            )
+            cache_dir = PROJECT_ROOT / ".cache"
+            update_stock_list_cache(vn_symbols, cache_dir)
+
+            ok, fail = 0, 0
+            for sym in vn_symbols:
+                df = fetch_with_vnstock(sym, start, end)
+                if df is None or df.empty:
+                    df = fetch_with_yfinance(sym, start, end)
+                if df is not None and not df.empty:
+                    save_cache(sym, df, cache_dir)
+                    ok += 1
+                else:
+                    fail += 1
+            logger.success(f"VN OHLCV cache: {ok} OK, {fail} failed")
+        except Exception as e:
+            logger.warning(f"VN OHLCV pre-fetch failed (scan will use existing cache): {e}")
     else:
-        vn_symbols = _fetch_full_vn_universe()
-
-    # Also run nightly OHLCV cache for all symbols (feeds scanner's cache)
-    logger.info("Pre-fetching OHLCV cache for all symbols...")
-    try:
-        import importlib
-        cache_script = importlib.util.spec_from_file_location(
-            "nightly_vn_cache",
-            str(PROJECT_ROOT / "scripts" / "nightly_vn_cache.py")
-        )
-        cache_mod = importlib.util.module_from_spec(cache_script)
-        # Override symbols with full list
-        cache_mod_symbols = vn_symbols
-        end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-
-        from scripts.nightly_vn_cache import (
-            fetch_with_vnstock, fetch_with_yfinance, save_cache,
-            update_stock_list_cache
-        )
-        cache_dir = PROJECT_ROOT / ".cache"
-        update_stock_list_cache(vn_symbols, cache_dir)
-
-        ok, fail = 0, 0
-        for sym in vn_symbols:
-            df = fetch_with_vnstock(sym, start, end)
-            if df is None or df.empty:
-                df = fetch_with_yfinance(sym, start, end)
-            if df is not None and not df.empty:
-                save_cache(sym, df, cache_dir)
-                ok += 1
-            else:
-                fail += 1
-        logger.success(f"OHLCV cache: {ok} OK, {fail} failed")
-    except Exception as e:
-        logger.warning(f"OHLCV pre-fetch failed (scan will use existing cache): {e}")
+        logger.info("Scope excludes VN: skip VN universe fetch and VN cache prefetch.")
 
     # Step 2: Run full alpha scan
-    results = _run_full_scan(vn_symbols, top_n=args.top)
+    results = _run_full_scan(vn_symbols, top_n=args.top, market_scope=scope)
 
     if not results:
         logger.error("Scan returned no results!")
@@ -267,7 +810,13 @@ def main():
 
     # Step 3: Save
     if not args.dry_run:
-        _save_results(results, args.top)
+        _save_results(results, args.top, scope)
+        _sync_analysis_db()
+        sent = _send_telegram_nightly_report(results, args.top, scope)
+        if sent:
+            logger.success("Nightly Telegram report sent.")
+        else:
+            logger.warning("Nightly Telegram report not sent.")
     else:
         logger.info("[DRY RUN] Would save:")
         for i, r in enumerate(results[:5], 1):
