@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-06-15T21:07:08.487493",
-  "scan_date": "2026-06-15",
+  "generated_at": "2026-06-16T21:07:49.731998",
+  "scan_date": "2026-06-16",
   "market_scope": "VN_TW",
-  "total_candidates": 9,
+  "total_candidates": 4,
   "counts": {
     "grade_a_raw": 0,
-    "grade_b_raw": 1,
-    "grade_c_raw": 8,
+    "grade_b_raw": 0,
+    "grade_c_raw": 4,
     "top_a_sent": 0,
     "wave5_caution_in_top_a": 0,
     "strategic_only_in_top_a": 0
@@ -28,10 +28,10 @@
     },
     {
       "rank": 2,
-      "symbol": "ONE.VN",
+      "symbol": "THD.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 1.0,
+      "institutional_score": 0.5561677710028444,
       "reason": "Low confidence gate"
     },
     {
@@ -39,47 +39,15 @@
       "symbol": "VVS.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.8416096081467528,
+      "institutional_score": 0.4601268641687268,
       "reason": "Low confidence gate"
     },
     {
       "rank": 4,
-      "symbol": "C32.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.44778271083125604,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 5,
-      "symbol": "BSR.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.44351866317680294,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 6,
-      "symbol": "THD.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.4426783042195769,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 7,
-      "symbol": "PNC.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": -0.13316355251265133,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 8,
       "symbol": "KSV.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": -0.20988189689236203,
+      "institutional_score": -0.37517855221149365,
       "reason": "Low confidence gate"
     }
   ],
