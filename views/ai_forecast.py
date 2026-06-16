@@ -881,8 +881,9 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
     # 3. Handle 'Weak' or 'No Sync' states strictly for Optimization
     is_weak = ("REBOUND" in h4_health) or (h4_is_bullish != ("BULLISH" in daily_bias))
     
-    setup_label = "CONFLUENCE LONG" if (is_bullish and not is_weak) else "CONFLUENCE SHORT" if (is_bearish and not is_weak) else "WAIT / NO SYNC"
-    setup_color = "#00E676" if is_bullish else "#FF5252" if is_bearish else "#f6ad55"
+    short_allowed_for_symbol = not _is_vn_tw_equity(symbol, market)
+    setup_label = "CONFLUENCE LONG" if (is_bullish and not is_weak) else "CONFLUENCE SHORT" if (is_bearish and not is_weak and short_allowed_for_symbol) else "DEFENSIVE / NO LONG" if (is_bearish and not is_weak) else "WAIT / NO SYNC"
+    setup_color = "#00E676" if is_bullish else "#FF5252" if (is_bearish and short_allowed_for_symbol) else "#f6ad55"
     if is_weak: setup_color = "#f6ad55" # Yellow for caution
 
     with st.spinner("Engineering Trade Execution..."):
@@ -999,6 +1000,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             rr_label = "Risk : Reward Ratio" if not plan_is_defensive else "Risk : Downside Ratio"
             sl_label = "STOP LOSS" if not plan_is_defensive else "RISK FLOOR"
             tp_label = "TAKE PROFIT (MAX)" if plan_is_bullish else ("SHORT TARGET" if plan_is_bearish else "DOWNSIDE TARGET")
+            tp_color = "#00E676" if plan_is_bullish or plan_is_bearish else "#f6ad55"
 
             # UI Construction
             ui_html = (
@@ -1083,7 +1085,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(sl_price)}</div>'
                 f'  </div>'
                 f'  <div style="background:linear-gradient(to bottom, rgba(0,230,118,0.1), rgba(0,230,118,0.02)); border:1px solid rgba(0,230,118,0.15); border-radius:8px; padding:12px 5px; text-align:center;">'
-                f'    <div style="font-size:0.65rem; color:#00E676; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">{tp_label}</div>'
+                f'    <div style="font-size:0.65rem; color:{tp_color}; font-weight:800; margin-bottom:4px; letter-spacing:0.5px;">{tp_label}</div>'
                 f'    <div style="font-size:1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(tp_price)}</div>'
                 f'  </div>'
                 f'</div>'
@@ -1148,7 +1150,7 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
         
         bull_obs = target_smc.get('bull_obs', [])
         bear_obs = target_smc.get('bear_obs', [])
-        relevant_zones = bull_obs if is_bullish else bear_obs
+        relevant_zones = bull_obs if is_bullish else bear_obs if is_bearish else []
         
         # Primary: SMC Order Blocks (Must be within 20% of curr_price to be valid)
         target_zone = None
@@ -1165,7 +1167,7 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
             range_source = "SMC OB"
         else:
             # Fallback 1: Recent FVG
-            fvgs = target_smc.get('bull_fvgs' if is_bullish else 'bear_fvgs', [])
+            fvgs = target_smc.get('bull_fvgs' if is_bullish else 'bear_fvgs' if is_bearish else '', [])
             target_fvg = min(fvgs, key=lambda x: abs(x['top'] - curr_price)) if fvgs else None
             
             if target_fvg and abs(target_fvg['top'] - curr_price) / curr_price < 0.2:
@@ -1176,17 +1178,21 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
             else:
                 # Fallback 2: Strategic Hub Phases (Best for BSR where 1H data is erratic)
                 s0 = scalp_intel.get("step0") if scalp_intel else None
-                entry_price = s0 if s0 else curr_price
-                sl_price = entry_price * (0.975 if is_bullish else 1.025)
+                entry_price = s0 if s0 and (is_bullish or is_bearish) else curr_price
+                sl_price = entry_price * (0.975 if (is_bullish or is_defensive or is_neutral) else 1.025)
                 range_text = f"AUTO: {entry_price:,.2f}"
-                range_source = "PRECISION ENTRY" # Updated for strict mode
+                range_source = "DEFENSIVE WATCH" if is_defensive else "PRECISION ENTRY"
 
         risk = abs(entry_price - sl_price)
         if risk == 0: risk = curr_price * 0.015
         
-        tp1 = entry_price + (risk * 1.5) if is_bullish else entry_price - (risk * 1.5)
-        tp2 = entry_price + (risk * 2.5) if is_bullish else entry_price - (risk * 2.5)
-        tp3 = entry_price + (risk * 4.0) if is_bullish else entry_price - (risk * 4.0)
+        target_sign = 1 if (is_bullish or is_neutral) else -1
+        tp1 = entry_price + (target_sign * risk * 1.5)
+        tp2 = entry_price + (target_sign * risk * 2.5)
+        tp3 = entry_price + (target_sign * risk * 4.0)
+        target_label_prefix = "Downside" if is_defensive else "TP"
+        target_color = "#f6ad55" if is_defensive else "#48bb78"
+        rr_label = "Risk:Downside Ratio" if is_defensive else "Risk:Reward Ratio"
         
         rr_val = abs(tp2 - entry_price) / risk if risk > 0 else 1.0
         unfilled_fvg = len(target_smc.get('bull_fvgs', [])) + len(target_smc.get('bear_fvgs', []))
@@ -1223,22 +1229,22 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
                     </div>
                     <div style="height:1px; background:rgba(255,255,255,0.05); margin:5px 0;"></div>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:#48bb78; font-size:0.85rem; font-weight:600;">TP1 (1.5R):</span>
-                        <span style="color:#48bb78; font-weight:800; font-size:1rem; font-family:monospace;">{tp1:,.2f}</span>
+                        <span style="color:{target_color}; font-size:0.85rem; font-weight:600;">{target_label_prefix}1 (1.5R):</span>
+                        <span style="color:{target_color}; font-weight:800; font-size:1rem; font-family:monospace;">{tp1:,.2f}</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:#48bb78; font-size:0.85rem; font-weight:600;">TP2 (2.5R):</span>
-                        <span style="color:#48bb78; font-weight:800; font-size:1rem; font-family:monospace;">{tp2:,.2f}</span>
+                        <span style="color:{target_color}; font-size:0.85rem; font-weight:600;">{target_label_prefix}2 (2.5R):</span>
+                        <span style="color:{target_color}; font-weight:800; font-size:1rem; font-family:monospace;">{tp2:,.2f}</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:#48bb78; font-size:0.85rem; font-weight:600;">TP3 (4R):</span>
-                        <span style="color:#48bb78; font-weight:800; font-size:1rem; font-family:monospace;">{tp3:,.2f}</span>
+                        <span style="color:{target_color}; font-size:0.85rem; font-weight:600;">{target_label_prefix}3 (4R):</span>
+                        <span style="color:{target_color}; font-weight:800; font-size:1rem; font-family:monospace;">{tp3:,.2f}</span>
                     </div>
                 </div>
             </div>
             
             <div style="border-top:1px dashed rgba(255,255,255,0.1); padding-top:15px; display:flex; justify-content:space-between; align-items:center;">
-                <span style="color:#94a3b8; font-size:0.85rem; font-weight:700;">Risk:Reward Ratio</span>
+                <span style="color:#94a3b8; font-size:0.85rem; font-weight:700;">{rr_label}</span>
                 <span style="color:#f6ad55; font-weight:900; font-size:1.1rem; background:rgba(246,173,85,0.1); padding:2px 12px; border-radius:6px;">1 : {rr_val:.1f}</span>
             </div>
             <div style="font-size:0.65rem; color:#4a5568; margin-top:12px; text-align:left; letter-spacing:0.5px;">{datetime.now().strftime('%m/%d/%Y, %I:%M:%S %p')}</div>
@@ -1435,6 +1441,210 @@ def _render_entry_confirmation_table(smc_state: dict):
         _render_html(ui_html)
     except Exception as e:
         logger.debug(f"Entry confirmation table error: {e}")
+
+
+def _build_smc_entry_candidates(
+    df: pd.DataFrame,
+    smc_state: dict,
+    wyckoff_state: dict,
+    predictions: dict | None = None,
+) -> list[dict]:
+    """Build actionable long-entry candidates from current SMC FVG/OB zones."""
+    if df.empty:
+        return []
+
+    curr_price = float(smc_state.get("current_price", df["Close"].iloc[-1]))
+    if curr_price <= 0:
+        return []
+
+    stoch = smc_state.get("stoch", {})
+    stoch_k = float(stoch.get("k", 50.0))
+    stoch_status = str(stoch.get("status", "NEUTRAL")).upper()
+    q_target = None
+    if predictions and 63 in predictions:
+        q_target = float(predictions[63].get("predicted_price", 0.0) or 0.0)
+
+    zones: list[dict] = []
+    for f in smc_state.get("bull_fvgs", []):
+        zones.append({
+            "type": "FVG",
+            "top": float(f["top"]),
+            "bottom": float(f["bottom"]),
+            "filled_pct": float(f.get("filled_pct", 0.0)),
+        })
+    for ob in smc_state.get("bull_obs", []):
+        zones.append({
+            "type": "OB",
+            "top": float(ob["top"]),
+            "bottom": float(ob["bottom"]),
+            "strength": float(ob.get("strength", 0.0)),
+        })
+
+    if not zones:
+        return []
+
+    recent = df.tail(120)
+    swing_high = float(recent["High"].max())
+    swing_low = float(recent["Low"].min())
+    swing_diff = max(swing_high - swing_low, 0.0)
+    fib_levels = [
+        swing_high - 0.382 * swing_diff,
+        swing_high - 0.500 * swing_diff,
+        swing_high - 0.618 * swing_diff,
+    ] if swing_diff > 0 else []
+
+    try:
+        vp = VolumeProfile()
+        vpa = vp.analyze(df)
+        vp_levels = [float(v) for v in [vpa.get("poc", 0), vpa.get("vah", 0), vpa.get("val", 0)] if float(v or 0) > 0]
+    except Exception:
+        vp_levels = []
+
+    phase = str(wyckoff_state.get("phase", "")).upper()
+    wyckoff_ok = any(x in phase for x in ["PHASE B", "PHASE C", "PHASE D", "ACCUMULATION", "MARKUP"])
+    qmf_ok = int(smc_state.get("signal", 0)) >= 0
+    candidates: list[dict] = []
+
+    for z in zones:
+        if z["top"] <= 0 or z["bottom"] <= 0 or z["top"] <= z["bottom"]:
+            continue
+
+        mid = (z["top"] + z["bottom"]) / 2.0
+        width = z["top"] - z["bottom"]
+        dist_to_zone = 0.0
+        if curr_price > z["top"]:
+            dist_to_zone = (curr_price - z["top"]) / curr_price
+        elif curr_price < z["bottom"]:
+            dist_to_zone = (z["bottom"] - curr_price) / curr_price
+        inside = z["bottom"] <= curr_price <= z["top"]
+        if abs(mid - curr_price) / curr_price > 0.18:
+            continue
+
+        score = 1
+        factors = [z["type"]]
+        if stoch_status != "OVERBOUGHT":
+            score += 1
+            factors.append("STOCH_OK")
+        if stoch_k <= 35:
+            score += 1
+            factors.append("OVERSOLD")
+        if any(z["bottom"] - width <= lvl <= z["top"] + width for lvl in vp_levels):
+            score += 1
+            factors.append("VOL_PROFILE")
+        if any(z["bottom"] - width <= lvl <= z["top"] + width for lvl in fib_levels):
+            score += 1
+            factors.append("FIB")
+        if wyckoff_ok:
+            score += 1
+            factors.append("WYCKOFF")
+        if smc_state.get("sweep_bull") or smc_state.get("idm_bull"):
+            score += 1
+            factors.append("LIQ_SWEEP")
+        if qmf_ok:
+            score += 1
+            factors.append("SMC_SIGNAL")
+
+        entry_low = z["bottom"]
+        entry_high = z["top"]
+        stop = max(0.01, entry_low - max(width * 0.35, curr_price * 0.015))
+        risk = max(entry_high - stop, curr_price * 0.01)
+        target = max(entry_high + risk * 2.0, q_target or 0.0, curr_price * 1.05)
+        rr = (target - entry_high) / risk if risk > 0 else 0.0
+
+        if inside and score >= 5:
+            status = "READY"
+        elif dist_to_zone <= 0.02 and score >= 4:
+            status = "NEAR"
+        elif score >= 4:
+            status = "WATCH"
+        else:
+            status = "WAIT"
+
+        candidates.append({
+            "status": status,
+            "type": z["type"],
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "stop": stop,
+            "target": target,
+            "rr": rr,
+            "score": min(score, 8),
+            "distance_pct": dist_to_zone * 100.0,
+            "inside": inside,
+            "factors": factors,
+        })
+
+    rank = {"READY": 0, "NEAR": 1, "WATCH": 2, "WAIT": 3}
+    candidates.sort(key=lambda c: (rank.get(c["status"], 9), -c["score"], c["distance_pct"]))
+    return candidates
+
+
+def _render_smc_entry_radar(
+    symbol: str,
+    market: str,
+    df: pd.DataFrame,
+    smc_state: dict,
+    wyckoff_state: dict,
+    predictions: dict,
+) -> None:
+    """Render a daily-updated SMC entry table and alert surface."""
+    candidates = _build_smc_entry_candidates(df, smc_state, wyckoff_state, predictions)
+    actionables = [c for c in candidates if c["status"] in {"READY", "NEAR"}]
+    top = candidates[0] if candidates else None
+
+    st.markdown("### SMC Entry Radar")
+    if not top:
+        st.info("No active bullish SMC entry zone near current price.")
+        return
+
+    if top["status"] == "READY":
+        st.success(
+            f"SMC READY: {symbol} is inside a high-confluence {top['type']} entry zone "
+            f"({_format_price(top['entry_low'], symbol, market)} - {_format_price(top['entry_high'], symbol, market)})."
+        )
+    elif top["status"] == "NEAR":
+        st.warning(
+            f"SMC NEAR: {symbol} is {top['distance_pct']:.1f}% from a {top['type']} entry zone. Wait for touch/confirmation."
+        )
+    else:
+        st.info("SMC zones exist, but no immediate entry trigger yet.")
+
+    rows = []
+    for c in candidates[:8]:
+        rows.append({
+            "Status": c["status"],
+            "Zone Type": c["type"],
+            "Entry Zone": f"{c['entry_low']:,.2f} - {c['entry_high']:,.2f}",
+            "Stop": f"{c['stop']:,.2f}",
+            "Target": f"{c['target']:,.2f}",
+            "R:R": round(c["rr"], 2),
+            "Score": f"{c['score']}/8",
+            "Distance": f"{c['distance_pct']:.1f}%",
+            "Factors": ", ".join(c["factors"]),
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    if actionables:
+        alert = actionables[0]
+        alert_text = (
+            f"SMC {alert['status']} | {symbol} {market} | "
+            f"Entry {alert['entry_low']:,.2f}-{alert['entry_high']:,.2f} | "
+            f"SL {alert['stop']:,.2f} | TP {alert['target']:,.2f} | "
+            f"Score {alert['score']}/8 | RR {alert['rr']:.2f}"
+        )
+        st.caption(alert_text)
+        if st.button("Send SMC Telegram Alert", key=f"smc_alert_{symbol}_{market}"):
+            try:
+                from src.alerts.telegram import TelegramAlertSender
+                sent = TelegramAlertSender().send_signal_alert(
+                    ticker=symbol,
+                    signal=1,
+                    price=float(smc_state.get("current_price", df["Close"].iloc[-1])),
+                    reason=alert_text,
+                )
+                st.success("Telegram alert sent.") if sent else st.warning("Telegram is not configured or send failed.")
+            except Exception as exc:
+                st.error(f"Telegram alert failed: {exc}")
 
 
 def _render_smart_entry_scanner(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict):
@@ -1757,12 +1967,14 @@ def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
             # Force Buy Steps: Step 1 is Structural Entry, Step 2 is AI Price Target
             bull_obs = s_h.get("bull_obs", [])
             step1_price = bull_obs[0]["top"] if bull_obs else (curr_price * 0.99)
-            step2_price = p63.get("predicted_price", curr_price * 1.10)
+            bull_target = p63.get("predicted_price", curr_price * 1.10)
+            step2_price = bull_target if bull_target > curr_price else (curr_price * 1.10)
         elif is_bearish:
             # Short Alignment
             bear_obs = s_h.get("bear_obs", [])
             step1_price = bear_obs[0]["bottom"] if bear_obs else (curr_price * 1.01)
-            step2_price = p63.get("predicted_price", curr_price * 0.90)
+            bear_target = p63.get("predicted_price", curr_price * 0.90)
+            step2_price = bear_target if bear_target < curr_price else (curr_price * 0.90)
         else:
             # Neutral means no directional setup, not an implicit short.
             step1_price = curr_price
@@ -2274,6 +2486,11 @@ def render():
     
     smc_core = SmcAnalyzer(SmcConfig())
     smc_state = smc_core.get_current_state(df_train)
+    try:
+        smc_signal_df = smc_core.generate_signals(df_train.copy())
+    except Exception as _e:
+        logger.debug(f"SMC signal history failed: {_e}")
+        smc_signal_df = pd.DataFrame()
     qmf_df = QuantMoneyFlowAnalyzer().generate_signals(df_train)
     qmf_last = qmf_df.iloc[-1] if not qmf_df.empty else {}
 
@@ -2363,7 +2580,9 @@ def render():
     if _FUND_AVAILABLE:
         try:
             _fund_key = f"fund_{symbol}"
-            if _fund_key not in st.session_state or not st.session_state[_fund_key] or st.session_state[_fund_key].get("data_coverage", 0) == 0:
+            _fund_current = st.session_state.get(_fund_key)
+            _legacy_poison = bool(_fund_current) and _fund_current.get("data_coverage", 0) == 0 and str(_fund_current.get("grade", "")).upper() == "F"
+            if _fund_key not in st.session_state or not st.session_state[_fund_key] or _legacy_poison:
                 st.session_state[_fund_key] = get_fundamental_dict(symbol, market)
             fund_state = st.session_state[_fund_key]
         except Exception as _e:
@@ -2791,7 +3010,7 @@ def render():
             with chart_ctrls[1]:
                 show_fibo = st.checkbox("Fibonacci", value=False, key="chart_fibo")
             with chart_ctrls[2]:
-                show_smc = st.checkbox("SMC Zones", value=False, key="chart_smc")
+                show_smc = st.checkbox("SMC Zones + Entry Points", value=True, key="chart_smc")
             with chart_ctrls[3]:
                 st.markdown('<div style="text-align:right; color:#94a3b8; font-size:0.75rem; padding-top:10px;">PRO VIEW</div>', unsafe_allow_html=True)
 
@@ -2932,6 +3151,37 @@ def render():
                         annotation_font=dict(color="#fde68a", size=10),
                     )
 
+            # Historical SMC BUY entry markers
+            if show_smc and not smc_signal_df.empty and "smc_signal" in smc_signal_df.columns:
+                _entry_df = smc_signal_df[smc_signal_df["smc_signal"] == 1].copy()
+                if not _entry_df.empty:
+                    _entry_df = _entry_df.tail(60)
+                    _entry_y = _entry_df["Low"].astype(float) * 0.985
+                    _entry_text = (
+                        _entry_df["smc_signal_reason"]
+                        if "smc_signal_reason" in _entry_df.columns
+                        else pd.Series(["SMC BUY"] * len(_entry_df), index=_entry_df.index)
+                    )
+                    fig.add_trace(go.Scatter(
+                        x=_entry_df["Date"],
+                        y=_entry_y,
+                        mode="markers",
+                        name="SMC Entry",
+                        marker=dict(
+                            symbol="triangle-up",
+                            size=12,
+                            color="#22c55e",
+                            line=dict(color="#052e16", width=1),
+                        ),
+                        text=_entry_text,
+                        hovertemplate=(
+                            "<b>SMC Entry</b><br>"
+                            "Date=%{x}<br>"
+                            "Ref=%{y:,.2f}<br>"
+                            "%{text}<extra></extra>"
+                        ),
+                    ))
+
             # AI Target
             if 1 in predictions:
                 p1 = predictions[1]
@@ -2981,6 +3231,9 @@ def render():
 
         # NEW: Trade Plan Dashboard (SYNCED with Intel)
         _render_trade_plan_panel(df_train, smc_state, predictions, scalp_intel)
+
+        # Daily actionable SMC entry table + alert surface
+        _render_smc_entry_radar(symbol, market, df_train, smc_state, wyckoff_state, predictions)
 
         # UPGRADED: Smart Entry Scanner (replaces Liquidity Black Holes + Entry Table)
         _render_smart_entry_scanner(df_train, smc_state, wyckoff_state)
@@ -3287,23 +3540,25 @@ def _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state,
             fs_grade = fund_state.get("grade", "N/A")
             fs_label = fund_state.get("label", "")
             coverage = fund_state.get("data_coverage", 0)
+            fund_valid = coverage >= 40 and str(fs_grade).upper() != "N/A"
             scores_detail = fund_state.get("scores", {})
-            gc = "#22c55e" if fs_score >= 70 else ("#f59e0b" if fs_score >= 50 else "#ef4444")
+            gc = "#22c55e" if fund_valid and fs_score >= 70 else ("#f59e0b" if fund_valid and fs_score >= 50 else ("#ef4444" if fund_valid else "#94a3b8"))
+            score_display = f"{fs_score}/100" if fund_valid else "N/A"
             st.markdown("#### 🏦 Fundamental Quality Score")
             fc1, fc2 = st.columns([1, 2])
             with fc1:
                 st.markdown(
                     f'<div style="text-align:center;background:rgba(0,0,0,0.3);border:2px solid {gc};border-radius:12px;padding:16px;">'
                     f'<div style="font-size:3rem;font-weight:900;color:{gc};">{fs_grade}</div>'
-                    f'<div style="font-size:1.5rem;font-weight:700;color:{gc};">{fs_score}/100</div>'
+                    f'<div style="font-size:1.5rem;font-weight:700;color:{gc};">{score_display}</div>'
                     f'<div style="font-size:0.75rem;color:#94a3b8;">{fs_label}</div>'
                     f'<div style="font-size:0.65rem;color:#475569;">Data: {coverage}% coverage</div></div>',
                     unsafe_allow_html=True)
             with fc2:
                 for metric, data in scores_detail.items():
                     pts = data.get("pts", 0); maxp = data.get("max", 1); raw = data.get("raw", "N/A")
-                    pct = pts / maxp if maxp > 0 else 0
-                    bc = "#22c55e" if pct >= 0.7 else ("#f59e0b" if pct >= 0.4 else "#ef4444")
+                    pct = pts / maxp if (fund_valid and maxp > 0) else 0
+                    bc = "#22c55e" if pct >= 0.7 else ("#f59e0b" if pct >= 0.4 else ("#ef4444" if fund_valid else "#334155"))
                     st.markdown(
                         f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
                         f'<div style="width:90px;font-size:0.7rem;color:#94a3b8;">{metric}</div>'
@@ -3338,7 +3593,8 @@ def _render_composite_score_panel(smc_state, wyckoff_state, mtf_state, ew_state,
             ew_pts = int(ew_conf/10) if "Bullish" in ew_bias_s else (10-int(ew_conf/10) if "Bearish" in ew_bias_s else 5)
             factors.append({"factor": "Elliott Wave", "weight": 15, "score": min(10,max(0,ew_pts)), "max": 10,
                             "signal": f"Wave {ew_state.get('current_wave','?')} ({ew_bias_s})"})
-        if fund_state:
+        fund_valid = bool(fund_state) and fund_state.get("data_coverage", 0) >= 40 and str(fund_state.get("grade", "N/A")).upper() != "N/A"
+        if fund_valid:
             factors.append({"factor": "Fundamental", "weight": 15,
                             "score": int(fund_state.get("total_score", 50)/10), "max": 10,
                             "signal": f"Grade {fund_state.get('grade','N/A')}"})
