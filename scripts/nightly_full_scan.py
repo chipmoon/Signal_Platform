@@ -4,7 +4,7 @@ Nightly Full-Universe Pre-Scan Pipeline
 Chay moi toi luc 21:00 (Taiwan UTC+8) tren may local:
   1. Fetch full VN universe tu vnstock (khong bi chan IP khi chay local)
   2. Chay AlphaScannerEngine (full Tier1 + Tier2 deep scan)
-  3. Output top 20 VN candidates sorted by institutional_score
+  3. Output top VN/TW candidates sorted by institutional_score
   4. Push ket qua JSON + OHLCV parquet cache len GitHub
   5. Streamlit Cloud doc JSON -> hien thi ngay, khong can goi API
 
@@ -20,6 +20,7 @@ Setup Task Scheduler: chay setup_nightly_task.ps1 (Admin)
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import subprocess
 import sys
@@ -43,6 +44,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 SCAN_RESULTS_PATH = DATA_DIR / "nightly_scan_results.json"
 SCAN_META_PATH = DATA_DIR / "nightly_scan_meta.json"
 NIGHTLY_REPORT_PATH = DATA_DIR / "nightly_telegram_snapshot.json"
+SMC_ALERT_STATE_PATH = DATA_DIR / "smc_alert_state.json"
 
 
 def _safe_float(v: object, default: float = 0.0) -> float:
@@ -86,6 +88,17 @@ def _fmt_pick_line(i: int, row: dict) -> str:
 
 def _calc_entry_stop_target(row: dict) -> tuple[float, float, float, float]:
     """Derive entry/stop/target with robust fallbacks for nightly alerts."""
+    smc_status = str(row.get("smc_entry_status", "")).upper()
+    smc_low = _safe_float(row.get("smc_entry_low", 0.0))
+    smc_high = _safe_float(row.get("smc_entry_high", 0.0))
+    smc_stop = _safe_float(row.get("smc_entry_stop", 0.0))
+    smc_target = _safe_float(row.get("smc_entry_target", 0.0))
+    smc_rr = _safe_float(row.get("smc_entry_rr", 0.0))
+    if smc_status in {"READY", "NEAR"} and smc_low > 0 and smc_high > smc_low and smc_stop > 0 and smc_target > smc_high:
+        entry = (smc_low + smc_high) / 2.0
+        rr_eff = smc_rr if smc_rr > 0 else (smc_target - smc_high) / max(smc_high - smc_stop, 1e-9)
+        return entry, smc_stop, smc_target, rr_eff
+
     entry = _safe_float(row.get("last_close", 0.0))
     if entry <= 0:
         entry = max(_safe_float(row.get("ai_target_1d", 0.0)), 0.01)
@@ -132,6 +145,20 @@ def _fmt_pick_line_mobile(i: int, row: dict) -> str:
     line1 = f"<b>{i}) {sym}</b> | S:{score:.2f} | 1M:{up1:+.1f}%"
     line2 = f"E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}"
     return f"{line1}\n<code>{line2}</code>"
+
+
+def _fmt_smc_zone(row: dict) -> str:
+    status = str(row.get("smc_entry_status", "NONE")).upper()
+    if status not in {"READY", "NEAR", "WATCH"}:
+        return "SMC:NONE"
+    low = _safe_float(row.get("smc_entry_low", 0.0))
+    high = _safe_float(row.get("smc_entry_high", 0.0))
+    score = int(_safe_float(row.get("smc_entry_score", 0.0)))
+    dist = _safe_float(row.get("smc_entry_distance_pct", 0.0))
+    ztype = str(row.get("smc_entry_type", "SMC") or "SMC")
+    if low > 0 and high > low:
+        return f"SMC:{status} {ztype} {low:.2f}-{high:.2f} ({score}/8, {dist:.1f}%)"
+    return f"SMC:{status} {ztype} ({score}/8)"
 
 
 def _build_nightly_suggestions(ranked: list[dict], grade_a: list[dict], grade_c: list[dict]) -> list[str]:
@@ -269,6 +296,134 @@ def _save_nightly_snapshot(payload: dict) -> None:
         logger.warning(f"Nightly snapshot save failed: {exc}")
 
 
+def _load_smc_alert_state() -> dict:
+    if not SMC_ALERT_STATE_PATH.exists():
+        return {"sent": {}}
+    try:
+        data = json.loads(SMC_ALERT_STATE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"sent": {}}
+    except Exception:
+        return {"sent": {}}
+
+
+def _save_smc_alert_state(state: dict) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        SMC_ALERT_STATE_PATH.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning(f"SMC alert state save failed: {exc}")
+
+
+def _smc_alert_key(row: dict) -> str:
+    sym = str(row.get("symbol", "N/A")).upper()
+    market = str(row.get("market", "")).upper()
+    status = str(row.get("smc_entry_status", "")).upper()
+    ztype = str(row.get("smc_entry_type", "SMC")).upper()
+    low = round(_safe_float(row.get("smc_entry_low", 0.0)), 2)
+    high = round(_safe_float(row.get("smc_entry_high", 0.0)), 2)
+    return f"{market}|{sym}|{status}|{ztype}|{low:.2f}-{high:.2f}"
+
+
+def _select_smc_buy_alerts(results: list[dict], top_n: int = 10) -> list[dict]:
+    """Pick high-quality SMC buy alerts from scan rows."""
+    rows: list[dict] = []
+    for r in results:
+        status = str(r.get("smc_entry_status", "")).upper()
+        if status not in {"READY", "NEAR"}:
+            continue
+        if bool(r.get("veto", False)):
+            continue
+        if str(r.get("market", "")).upper() not in {"VN", "TW"}:
+            continue
+        smc_score = int(_safe_float(r.get("smc_entry_score", 0.0)))
+        rr = _safe_float(r.get("smc_entry_rr", 0.0))
+        dist = _safe_float(r.get("smc_entry_distance_pct", 999.0), 999.0)
+        inst = _safe_float(r.get("institutional_score", 0.0))
+        qmf = int(_safe_float(r.get("qmf_signal", 0.0)))
+        stoch = str(r.get("stoch_state", "NEUTRAL")).upper()
+        if smc_score < 6:
+            continue
+        if rr < 1.4:
+            continue
+        if status == "NEAR" and dist > 1.5:
+            continue
+        if qmf < 0 or stoch == "OVERBOUGHT":
+            continue
+        if inst < 0.05:
+            continue
+        rows.append(r)
+
+    rank = {"READY": 0, "NEAR": 1}
+    rows.sort(
+        key=lambda x: (
+            rank.get(str(x.get("smc_entry_status", "")).upper(), 9),
+            -int(_safe_float(x.get("smc_entry_score", 0.0))),
+            -_safe_float(x.get("institutional_score", 0.0)),
+            _safe_float(x.get("smc_entry_distance_pct", 999.0), 999.0),
+        )
+    )
+    return rows[:top_n]
+
+
+def _send_new_smc_buy_alerts(results: list[dict], top_n: int = 10, force: bool = False) -> int:
+    """Send dedicated Telegram SMC BUY alerts, suppressing duplicates per scan date."""
+    sender = TelegramAlertSender(channel="smc")
+    if not sender.is_enabled:
+        logger.warning("Telegram not configured; skip dedicated SMC buy alerts.")
+        return 0
+
+    scan_date = datetime.now().strftime("%Y-%m-%d")
+    state = _load_smc_alert_state()
+    sent_state = state.setdefault("sent", {})
+    candidates = _select_smc_buy_alerts(results, top_n=top_n)
+    new_alerts = []
+    for row in candidates:
+        key = _smc_alert_key(row)
+        if not force and sent_state.get(key) == scan_date:
+            continue
+        new_alerts.append((key, row))
+
+    if not new_alerts:
+        logger.info("No new SMC BUY alerts to send.")
+        return 0
+
+    lines: list[str] = []
+    for i, (key, r) in enumerate(new_alerts, 1):
+        sym = html.escape(str(r.get("symbol", "N/A")))
+        market = html.escape(str(r.get("market", "")))
+        status = html.escape(str(r.get("smc_entry_status", "")))
+        ztype = html.escape(str(r.get("smc_entry_type", "SMC") or "SMC"))
+        entry, stop, target, rr_eff = _calc_entry_stop_target(r)
+        score = int(_safe_float(r.get("smc_entry_score", 0.0)))
+        inst = _safe_float(r.get("institutional_score", 0.0))
+        dist = _safe_float(r.get("smc_entry_distance_pct", 0.0))
+        factors = html.escape(str(r.get("smc_entry_factors", "")))
+        lines.append(
+            f"{i}) <b>{sym}</b> {market} | <b>{status}</b> {ztype} | SMC:{score}/8 | Inst:{inst:.2f}\n"
+            f"<code>Entry:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}</code>\n"
+            f"<i>Distance:{dist:.1f}% | {factors}</i>"
+        )
+
+    msg = (
+        f"<b>🎯 SMC BUY ALERT — {scan_date}</b>\n"
+        "<i>Tactical SMC setup mới, đã lọc trùng trong ngày.</i>\n\n"
+        + "\n\n".join(lines)
+    )
+    if not sender.send_text(msg):
+        logger.warning("Dedicated SMC BUY alert send failed.")
+        return 0
+
+    for key, _ in new_alerts:
+        sent_state[key] = scan_date
+    state["updated_at"] = datetime.now().isoformat()
+    _save_smc_alert_state(state)
+    logger.success(f"Dedicated SMC BUY alerts sent: {len(new_alerts)}")
+    return len(new_alerts)
+
+
 def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope: str = "VN") -> bool:
     sender = TelegramAlertSender()
     telegram_enabled = sender.is_enabled
@@ -354,7 +509,7 @@ def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope:
                 consensus = "REDUCE_RISK"
             line1 = f"<b>{i}) {sym}</b> | G:{final_grade} | F:{fund_grade} | S:{score:.2f} | 1M:{up1:+.1f}%"
             line2 = f"E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}"
-            line3 = f"{strat} | {action_hint} | {consensus}"
+            line3 = f"{strat} | {action_hint} | {consensus} | {_fmt_smc_zone(r)}"
             a_lines_list.append(f"{line1}\n<code>{line2}</code>\n<i>{line3}</i>")
             snapshot_a.append(
                 {
@@ -376,6 +531,12 @@ def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope:
                     "stop_loss": stop,
                     "target": target,
                     "rr": rr_eff,
+                    "smc_entry_status": str(r.get("smc_entry_status", "NONE")),
+                    "smc_entry_type": str(r.get("smc_entry_type", "")),
+                    "smc_entry_low": _safe_float(r.get("smc_entry_low", 0.0)),
+                    "smc_entry_high": _safe_float(r.get("smc_entry_high", 0.0)),
+                    "smc_entry_score": int(_safe_float(r.get("smc_entry_score", 0.0))),
+                    "smc_entry_distance_pct": _safe_float(r.get("smc_entry_distance_pct", 0.0)),
                 }
             )
         a_lines = "\n\n".join(a_lines_list)
@@ -387,6 +548,66 @@ def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope:
     else:
         msg_a = "<b>✅ TOP 10 TACTICAL A</b>\n\nKhông có Grade A hôm nay."
     if telegram_enabled and not sender.send_text(msg_a):
+        return False
+
+    smc_rank = {"READY": 0, "NEAR": 1}
+    smc_actionable = [
+        r for r in ranked
+        if str(r.get("market", "")).upper() in {"VN", "TW"}
+        and str(r.get("smc_entry_status", "")).upper() in smc_rank
+        and not bool(r.get("veto", False))
+    ]
+    smc_actionable = sorted(
+        smc_actionable,
+        key=lambda x: (
+            smc_rank.get(str(x.get("smc_entry_status", "")).upper(), 9),
+            -int(_safe_float(x.get("smc_entry_score", 0.0))),
+            -_safe_float(x.get("institutional_score", 0.0)),
+        ),
+    )[:10]
+    snapshot_smc: list[dict] = []
+    if smc_actionable:
+        smc_lines: list[str] = []
+        for i, r in enumerate(smc_actionable, 1):
+            sym = str(r.get("symbol", "N/A"))
+            mkt = str(r.get("market", ""))
+            entry, stop, target, rr_eff = _calc_entry_stop_target(r)
+            status = str(r.get("smc_entry_status", ""))
+            score = int(_safe_float(r.get("smc_entry_score", 0.0)))
+            factors = str(r.get("smc_entry_factors", ""))
+            smc_lines.append(
+                f"{i}) <b>{sym}</b> {mkt} | {status} | SMC:{score}/8 | G:{_derive_grade(r)}\n"
+                f"<code>E:{entry:.2f}  SL:{stop:.2f}  TP:{target:.2f}  R:{rr_eff:.2f}</code>\n"
+                f"<i>{factors}</i>"
+            )
+            snapshot_smc.append(
+                {
+                    "rank": i,
+                    "symbol": sym,
+                    "market": mkt,
+                    "entry_grade": _derive_grade(r),
+                    "recommendation": str(r.get("recommendation", "WATCH")),
+                    "institutional_score": _safe_float(r.get("institutional_score", 0.0)),
+                    "smc_entry_status": status,
+                    "smc_entry_type": str(r.get("smc_entry_type", "")),
+                    "smc_entry_low": _safe_float(r.get("smc_entry_low", 0.0)),
+                    "smc_entry_high": _safe_float(r.get("smc_entry_high", 0.0)),
+                    "smc_entry_stop": _safe_float(r.get("smc_entry_stop", 0.0)),
+                    "smc_entry_target": _safe_float(r.get("smc_entry_target", 0.0)),
+                    "smc_entry_rr": _safe_float(r.get("smc_entry_rr", 0.0)),
+                    "smc_entry_score": score,
+                    "smc_entry_distance_pct": _safe_float(r.get("smc_entry_distance_pct", 0.0)),
+                    "smc_entry_factors": factors,
+                }
+            )
+        msg_smc = (
+            "<b>🎯 SMC ENTRY RADAR — READY / NEAR</b>\n"
+            "<i>READY = trong vùng entry; NEAR = cách vùng tối đa ~2%, chờ chạm/xác nhận.</i>\n\n"
+            + "\n\n".join(smc_lines)
+        )
+    else:
+        msg_smc = "<b>🎯 SMC ENTRY RADAR</b>\n\nKhông có mã READY/NEAR hôm nay."
+    if telegram_enabled and not sender.send_text(msg_smc):
         return False
 
     snapshot_c: list[dict] = []
@@ -433,6 +654,7 @@ def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope:
                 "top_a_sent": tactical_a_count,
                 "wave5_caution_in_top_a": caution_wave5,
                 "strategic_only_in_top_a": strategic_only,
+                "smc_ready_near": len(snapshot_smc),
             },
             "notes": {
                 "grade_definition": "Entry Grade in scanner is tactical (daily 1-3M setup), not fundamental grade.",
@@ -440,6 +662,7 @@ def _send_telegram_nightly_report(results: list[dict], top_n: int, market_scope:
                 "consensus_definition": "Consensus Action combines tactical entry grade + Elliott strategic tag + fundamental quality.",
             },
             "top_a": snapshot_a,
+            "smc_entry_radar": snapshot_smc,
             "grade_c_watchout": snapshot_c,
             "tips": tips,
         }
@@ -566,7 +789,7 @@ def _fetch_full_vn_universe() -> list[str]:
 def _run_full_scan(
     vn_symbols: list[str] | None = None,
     top_n: int = 20,
-    market_scope: str = "VN",
+    market_scope: str = "VN_TW",
 ) -> list[dict]:
     """
     Run AlphaScannerEngine with nightly-optimized config:
@@ -738,12 +961,14 @@ def main():
     parser.add_argument("--top", type=int, default=20, help="Top N results to save (default: 20)")
     parser.add_argument("--dry-run", action="store_true", help="Run scan but don't save")
     parser.add_argument("--no-fetch", action="store_true", help="Use extended hardcoded list only")
+    parser.add_argument("--no-smc-alerts", action="store_true", help="Disable dedicated Telegram SMC BUY alerts")
+    parser.add_argument("--force-smc-alerts", action="store_true", help="Send SMC BUY alerts even if already sent today")
     parser.add_argument(
         "--market-scope",
         type=str,
-        default="VN",
+        default="VN_TW",
         choices=["VN", "TW", "VN_TW", "ALL"],
-        help="Nightly scan scope. VN_TW is recommended for Taiwan hidden gems.",
+        help="Nightly scan scope. Default VN_TW scans Vietnam and Taiwan.",
     )
     args = parser.parse_args()
     scope = (args.market_scope or "VN").upper()
@@ -817,6 +1042,8 @@ def main():
             logger.success("Nightly Telegram report sent.")
         else:
             logger.warning("Nightly Telegram report not sent.")
+        if not args.no_smc_alerts:
+            _send_new_smc_buy_alerts(results, top_n=min(args.top, 10), force=args.force_smc_alerts)
     else:
         logger.info("[DRY RUN] Would save:")
         for i, r in enumerate(results[:5], 1):
