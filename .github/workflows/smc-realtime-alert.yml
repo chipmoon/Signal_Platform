@@ -84,6 +84,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          if [ -z "$TELEGRAM_SMC_BOT_TOKEN$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_SMC_CHAT_ID$TELEGRAM_CHAT_ID" ]; then
+            echo "::error::Telegram secrets are missing. Add TELEGRAM_SMC_BOT_TOKEN and TELEGRAM_SMC_CHAT_ID in GitHub Actions secrets."
+            exit 1
+          fi
+
           ARGS="--once --market-scope VN_TW --top 80"
           if [ -n "${{ github.event.inputs.symbols }}" ]; then
             ARGS="$ARGS --symbols '${{ github.event.inputs.symbols }}'"
