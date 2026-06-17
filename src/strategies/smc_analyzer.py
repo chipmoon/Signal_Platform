@@ -748,6 +748,11 @@ class SmcAnalyzer:
         df["smc_entry_zone_top"] = np.nan
         df["smc_entry_zone_bottom"] = np.nan
         df["smc_entry_type"] = ""
+        df["smc_entry_quality"] = 0
+        df["smc_entry_grade"] = ""
+        df["smc_entry_factors"] = ""
+        df["smc_entry_retest_no"] = 0
+        df["smc_entry_tactical_signal"] = 0
 
         score = df["smc_score"]
         struct = df["smc_structure"]
@@ -763,6 +768,11 @@ class SmcAnalyzer:
         close_arr = df["Close"].to_numpy(dtype=float)
         bullish_close = close_arr >= open_arr
         candle_range = np.maximum(high_arr - low_arr, 1e-9)
+        close_pos = (close_arr - low_arr) / candle_range
+        stoch_k_arr = df["stoch_k"].to_numpy(dtype=float) if "stoch_k" in df.columns else np.full(n, 50.0)
+        vol_arr = df["Volume"].to_numpy(dtype=float) if "Volume" in df.columns else np.ones(n)
+        vol_ma = pd.Series(vol_arr).rolling(20, min_periods=1).mean().to_numpy()
+        ret_10 = pd.Series(close_arr).pct_change(10).fillna(0.0).to_numpy()
         stoch_ok_arr = stoch_not_ob.to_numpy(dtype=bool)
 
         def _mark_entry(mask: np.ndarray, reason: str, zone_top: float, zone_bottom: float, zone_type: str) -> None:
@@ -784,6 +794,88 @@ class SmcAnalyzer:
             df.loc[idx, "smc_entry_zone_top"] = float(zone_top)
             df.loc[idx, "smc_entry_zone_bottom"] = float(zone_bottom)
             df.loc[idx, "smc_entry_type"] = zone_type
+            zone_mid = (float(zone_top) + float(zone_bottom)) / 2.0
+            zone_width_pct = (float(zone_top) - float(zone_bottom)) / np.maximum(close_arr[selected_pos], 1e-9)
+            distance_above_zone = np.maximum(close_arr[selected_pos] - float(zone_top), 0.0) / np.maximum(close_arr[selected_pos], 1e-9)
+            quality: list[int] = []
+            grades: list[str] = []
+            factors_list: list[str] = []
+            retest_nos: list[int] = []
+            tactical_flags: list[int] = []
+            for local_i, p in enumerate(selected_pos):
+                q = 0
+                factors = []
+                retest_no = local_i + 1
+                retest_nos.append(retest_no)
+                if retest_no == 1:
+                    q += 2
+                    factors.append("FIRST_RETEST")
+                elif retest_no == 2:
+                    q += 1
+                    factors.append("SECOND_RETEST")
+                else:
+                    q -= 1
+                    factors.append("LATE_RETEST")
+                if close_arr[p] >= float(zone_top):
+                    q += 2
+                    factors.append("RECLAIM_TOP")
+                elif close_arr[p] >= zone_mid:
+                    q += 1
+                    factors.append("MID_RECLAIM")
+                if bullish_close[p]:
+                    q += 2
+                    factors.append("BULL_CLOSE")
+                if close_pos[p] >= 0.55:
+                    q += 1
+                    factors.append("STRONG_CLOSE")
+                if (np.minimum(open_arr[p], close_arr[p]) - low_arr[p]) >= (0.30 * candle_range[p]):
+                    q += 1
+                    factors.append("WICK_REJECT")
+                if stoch_k_arr[p] <= 40:
+                    q += 2
+                    factors.append("STOCH_LOW")
+                elif stoch_k_arr[p] <= 70:
+                    q += 1
+                    factors.append("STOCH_OK")
+                if vol_arr[p] >= 0.80 * max(vol_ma[p], 1.0):
+                    q += 1
+                    factors.append("VOL_OK")
+                if zone_width_pct[local_i] >= 0.005:
+                    q += 1
+                    factors.append("WIDE_FVG")
+                if distance_above_zone[local_i] <= 0.03:
+                    q += 1
+                    factors.append("NEAR_ZONE")
+                elif distance_above_zone[local_i] > 0.08:
+                    q -= 2
+                    factors.append("CHASE")
+                if stoch_k_arr[p] >= 75:
+                    q -= 1
+                    factors.append("STOCH_HIGH")
+                if ret_10[p] >= 0.30:
+                    q -= 2
+                    factors.append("HOT_RUN")
+                elif ret_10[p] >= 0.20:
+                    q -= 1
+                    factors.append("RUN_EXTENDED")
+                q = int(np.clip(q, 0, 10))
+                grade = "BEST" if q >= 7 else "GOOD" if q >= 5 else "RAW"
+                tactical_ok = (
+                    q >= 7
+                    and retest_no <= 2
+                    and distance_above_zone[local_i] <= 0.04
+                    and stoch_k_arr[p] <= 72
+                    and ret_10[p] < 0.25
+                )
+                quality.append(q)
+                grades.append(grade)
+                factors_list.append(",".join(factors))
+                tactical_flags.append(1 if tactical_ok else 0)
+            df.loc[idx, "smc_entry_quality"] = quality
+            df.loc[idx, "smc_entry_grade"] = grades
+            df.loc[idx, "smc_entry_factors"] = factors_list
+            df.loc[idx, "smc_entry_retest_no"] = retest_nos
+            df.loc[idx, "smc_entry_tactical_signal"] = tactical_flags
 
         for i in range(2, n):
             if low_arr[i] <= high_arr[i - 2]:
