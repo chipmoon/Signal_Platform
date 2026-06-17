@@ -81,6 +81,18 @@ def _infer_market(symbol: str) -> str:
     return "US"
 
 
+def _previous_weekday(day):
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
+def _expected_session_date(market: str) -> pd.Timestamp:
+    tz_name = "Asia/Ho_Chi_Minh" if market == "VN" else "Asia/Taipei"
+    today = datetime.now(ZoneInfo(tz_name)).date()
+    return pd.Timestamp(_previous_weekday(today))
+
+
 def _load_symbols_from_nightly(top: int, scope: str) -> list[str]:
     scope = (scope or "VN_TW").upper()
     if not NIGHTLY_JSON.exists():
@@ -179,14 +191,25 @@ def _scan_symbol(symbol: str, lookback_days: int) -> tuple[str, str, pd.Series |
     provider = registry.get(market)
     if not provider:
         return symbol, market, None
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    # Daily providers such as yfinance treat end as exclusive; use tomorrow so
+    # today's candle can be included when the upstream source has published it.
+    market_now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh" if market == "VN" else "Asia/Taipei"))
+    end = (market_now + timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (market_now - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     try:
         df = provider.get_price_data(symbol, start, end, interval="1d")
         if df is None or df.empty or len(df) < 40:
             return symbol, market, None
         out = SmcAnalyzer(SmcConfig()).generate_signals(df)
         latest = out.iloc[-1]
+        latest_date = pd.to_datetime(latest.get("Date"), errors="coerce")
+        expected_date = _expected_session_date(market)
+        if pd.isna(latest_date) or latest_date.normalize() < expected_date:
+            logger.info(
+                f"Skipping stale SMC data [{symbol}]: latest={latest_date.date() if not pd.isna(latest_date) else 'N/A'} "
+                f"expected={expected_date.date()}"
+            )
+            return symbol, market, None
         tactical = int(_safe_float(latest.get("smc_entry_tactical_signal", 0.0))) == 1
         quality = _safe_float(latest.get("smc_entry_quality", 0.0))
         if tactical or quality >= 8:
@@ -240,7 +263,8 @@ def run_once(args) -> int:
         if _send_smc_alert(sender, sym, market, latest):
             sent[key] = datetime.now().isoformat()
             count += 1
-            logger.success(f"SMC alert sent: {sym}")
+            log_success = getattr(logger, "success", logger.info)
+            log_success(f"SMC alert sent: {sym}")
     if count:
         _save_state(state)
     elif args.notify_empty:
