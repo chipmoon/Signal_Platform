@@ -762,32 +762,49 @@ class SmcAnalyzer:
         low_arr = df["Low"].to_numpy(dtype=float)
         close_arr = df["Close"].to_numpy(dtype=float)
         bullish_close = close_arr >= open_arr
+        candle_range = np.maximum(high_arr - low_arr, 1e-9)
         stoch_ok_arr = stoch_not_ob.to_numpy(dtype=bool)
 
         def _mark_entry(mask: np.ndarray, reason: str, zone_top: float, zone_bottom: float, zone_type: str) -> None:
             if not bool(mask.any()):
                 return
             unused = df["smc_entry_signal"].to_numpy(dtype=int) == 0
-            idx = df.index[mask & unused]
-            if len(idx) == 0:
+            raw_pos = np.flatnonzero(mask & unused)
+            if len(raw_pos) == 0:
                 return
-            idx = idx[:1]
+            selected_pos = []
+            last_pos = -999
+            for p in raw_pos:
+                if p - last_pos >= 2:
+                    selected_pos.append(p)
+                    last_pos = p
+            idx = df.index[selected_pos]
             df.loc[idx, "smc_entry_signal"] = 1
             df.loc[idx, "smc_entry_reason"] = reason
             df.loc[idx, "smc_entry_zone_top"] = float(zone_top)
             df.loc[idx, "smc_entry_zone_bottom"] = float(zone_bottom)
             df.loc[idx, "smc_entry_type"] = zone_type
 
-        for fvg in bull_fvgs:
-            after_zone_confirmed = pos > (int(fvg.candle_idx) + 1)
-            wick_touch = (low_arr <= float(fvg.top)) & (high_arr >= float(fvg.bottom))
-            reclaim = close_arr >= float(fvg.bottom)
-            fvg_retest = after_zone_confirmed & wick_touch & reclaim & bullish_close & stoch_ok_arr
+        for i in range(2, n):
+            if low_arr[i] <= high_arr[i - 2]:
+                continue
+            zone_top = float(low_arr[i])
+            zone_bottom = float(high_arr[i - 2])
+            gap_size_pct = (zone_top - zone_bottom) / max(float(close_arr[i]), 1e-9)
+            if gap_size_pct < self.cfg.fvg_min_size_pct:
+                continue
+            after_zone_confirmed = pos > i
+            wick_touch = (low_arr <= zone_top) & (high_arr >= zone_bottom)
+            reclaim = close_arr >= zone_bottom
+            reclaim_top = close_arr >= zone_top
+            lower_wick_reject = (np.minimum(open_arr, close_arr) - low_arr) >= (0.30 * candle_range)
+            loose_confirm = bullish_close | reclaim_top | lower_wick_reject
+            fvg_retest = after_zone_confirmed & wick_touch & reclaim & loose_confirm & stoch_ok_arr
             _mark_entry(
                 fvg_retest,
-                "BULL_FVG_RETEST: Wick retest of bullish FVG with bullish close confirmation",
-                fvg.top,
-                fvg.bottom,
+                "BULL_FVG_RETEST: Wick retest/reclaim of bullish FVG",
+                zone_top,
+                zone_bottom,
                 "FVG",
             )
 
@@ -795,10 +812,13 @@ class SmcAnalyzer:
             after_zone_confirmed = pos > int(ob.candle_idx)
             wick_touch = (low_arr <= float(ob.top)) & (high_arr >= float(ob.bottom))
             reclaim = close_arr >= float(ob.bottom)
-            ob_retest = after_zone_confirmed & wick_touch & reclaim & bullish_close & stoch_ok_arr
+            reclaim_top = close_arr >= float(ob.top)
+            lower_wick_reject = (np.minimum(open_arr, close_arr) - low_arr) >= (0.30 * candle_range)
+            loose_confirm = bullish_close | reclaim_top | lower_wick_reject
+            ob_retest = after_zone_confirmed & wick_touch & reclaim & loose_confirm & stoch_ok_arr
             _mark_entry(
                 ob_retest,
-                "BULL_OB_RETEST: Wick retest of bullish order block with bullish close confirmation",
+                "BULL_OB_RETEST: Wick retest/reclaim of bullish order block",
                 ob.top,
                 ob.bottom,
                 "OB",
