@@ -5,12 +5,15 @@ Sends trading signals, risk alerts, and daily reports via Telegram Bot API.
 
 Usage:
     Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env file.
+    SMC alerts can use TELEGRAM_SMC_BOT_TOKEN / TELEGRAM_SMC_CHAT_ID.
 """
 
 from __future__ import annotations
 
 import os
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import requests
 from loguru import logger
@@ -23,21 +26,47 @@ class TelegramAlertSender:
     ensuring the system never crashes due to missing Telegram setup.
     """
 
-    _BASE_URL = "https://api.telegram.org/bot{token}/sendMessage"
+    _BASE_URL = "https://api.telegram.org/bot{token}/{endpoint}"
 
-    def __init__(self) -> None:
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    def __init__(self, channel: str = "default") -> None:
+        try:
+            from dotenv import load_dotenv
+            project_env = Path(__file__).resolve().parents[2] / ".env"
+            if project_env.exists():
+                load_dotenv(project_env, override=False)
+            load_dotenv(override=False)
+        except Exception:
+            # dotenv is optional at runtime; fallback to process environment.
+            pass
+
+        self.channel = str(channel or "default").lower()
+        if self.channel == "smc":
+            self.bot_token = os.getenv("TELEGRAM_SMC_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+            self.chat_id = os.getenv("TELEGRAM_SMC_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+        else:
+            self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+            self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self._enabled = bool(self.bot_token and self.chat_id)
+        self._session = requests.Session()
+        # Ignore broken system proxy variables (common local issue: 127.0.0.1:9).
+        self._session.trust_env = False
 
         if not self._enabled:
-            logger.debug("Telegram alerts disabled (no credentials in .env).")
+            logger.debug(f"Telegram alerts disabled for channel={self.channel} (no credentials in .env).")
 
     @property
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def _send(self, text: str) -> bool:
+    def _request(self, endpoint: str, payload: dict[str, Any], timeout: int = 15) -> dict[str, Any]:
+        if not self.bot_token:
+            return {"ok": False, "result": []}
+        url = self._BASE_URL.format(token=self.bot_token, endpoint=endpoint)
+        resp = self._session.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _send(self, text: str, chat_id: str | None = None, reply_to_message_id: int | None = None) -> bool:
         """Send a message via Telegram Bot API.
 
         Returns True if sent successfully, False otherwise.
@@ -46,19 +75,51 @@ class TelegramAlertSender:
             return False
 
         try:
-            url = self._BASE_URL.format(token=self.bot_token)
             payload = {
-                "chat_id": self.chat_id,
+                "chat_id": str(chat_id or self.chat_id),
                 "text": text,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
-            resp = requests.post(url, json=payload, timeout=10)
-            resp.raise_for_status()
+            if reply_to_message_id is not None:
+                payload["reply_to_message_id"] = int(reply_to_message_id)
+            data = self._request("sendMessage", payload, timeout=10)
+            if not bool(data.get("ok", False)):
+                logger.warning(f"Telegram send failed (API not ok): {data}")
+                return False
             return True
         except Exception as exc:
             logger.warning(f"Telegram send failed: {exc}")
             return False
+
+    def send_text(
+        self,
+        text: str,
+        chat_id: str | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> bool:
+        """Send a raw text/HTML message."""
+        return self._send(text, chat_id=chat_id, reply_to_message_id=reply_to_message_id)
+
+    def get_updates(self, offset: int | None = None, timeout: int = 25) -> list[dict]:
+        """Read inbound updates via long polling."""
+        if not self.bot_token:
+            return []
+        try:
+            payload: dict[str, Any] = {
+                "timeout": int(timeout),
+                "allowed_updates": ["message"],
+            }
+            if offset is not None:
+                payload["offset"] = int(offset)
+            data = self._request("getUpdates", payload, timeout=timeout + 5)
+            if bool(data.get("ok", False)):
+                result = data.get("result", [])
+                return result if isinstance(result, list) else []
+            return []
+        except Exception as exc:
+            logger.warning(f"Telegram getUpdates failed: {exc}")
+            return []
 
     def send_signal_alert(
         self,
