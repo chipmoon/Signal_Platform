@@ -3012,7 +3012,7 @@ def render():
             with chart_ctrls[2]:
                 show_smc = st.checkbox("SMC Zones + Entry Points", value=True, key="chart_smc")
             with chart_ctrls[3]:
-                st.markdown('<div style="text-align:right; color:#94a3b8; font-size:0.75rem; padding-top:10px;">PRO VIEW</div>', unsafe_allow_html=True)
+                show_best_smc_only = st.checkbox("Tactical SMC only", value=True, key="chart_best_smc_only")
 
             fig = go.Figure()
 
@@ -3156,19 +3156,53 @@ def render():
                 if "smc_entry_signal" in smc_signal_df.columns:
                     _entry_df = smc_signal_df[smc_signal_df["smc_entry_signal"] == 1].copy()
                     _reason_col = "smc_entry_reason"
+                    if (
+                        show_best_smc_only
+                        and "smc_entry_tactical_signal" in _entry_df.columns
+                        and (_entry_df["smc_entry_tactical_signal"].fillna(0).astype(int) == 1).any()
+                    ):
+                        _entry_df = _entry_df[_entry_df["smc_entry_tactical_signal"].fillna(0).astype(int) == 1].copy()
+                    elif (
+                        show_best_smc_only
+                        and "smc_entry_quality" in _entry_df.columns
+                        and (_entry_df["smc_entry_quality"].fillna(0).astype(float) >= 7).any()
+                    ):
+                        _entry_df = _entry_df[_entry_df["smc_entry_quality"].fillna(0).astype(float) >= 7].copy()
                 else:
                     _entry_df = smc_signal_df[smc_signal_df["smc_signal"] == 1].copy()
                     _reason_col = "smc_signal_reason"
                 if not _entry_df.empty:
                     _entry_df = _entry_df.tail(60)
                     _entry_y = _entry_df["Low"].astype(float) * 0.985
+                    _entry_quality = (
+                        _entry_df["smc_entry_quality"].fillna(4).astype(float)
+                        if "smc_entry_quality" in _entry_df.columns
+                        else pd.Series([4.0] * len(_entry_df), index=_entry_df.index)
+                    )
+                    _entry_grade = (
+                        _entry_df["smc_entry_grade"].fillna("RAW").astype(str)
+                        if "smc_entry_grade" in _entry_df.columns
+                        else pd.Series(["RAW"] * len(_entry_df), index=_entry_df.index)
+                    )
+                    _entry_colors = _entry_quality.map(lambda q: "#22c55e" if q >= 7 else "#84cc16" if q >= 5 else "#f59e0b")
+                    _entry_sizes = _entry_quality.map(lambda q: 15 if q >= 7 else 12 if q >= 5 else 9)
                     _entry_text = (
                         _entry_df[_reason_col]
                         if _reason_col in _entry_df.columns
                         else pd.Series(["SMC BUY"] * len(_entry_df), index=_entry_df.index)
                     )
+                    _entry_text = _entry_text.astype(str) + (
+                        "<br>Quality="
+                        + _entry_quality.map(lambda v: f"{int(v)}/10")
+                        + " "
+                        + _entry_grade
+                    )
+                    if "smc_entry_factors" in _entry_df.columns:
+                        _entry_text = _entry_text + "<br>Factors=" + _entry_df["smc_entry_factors"].fillna("").astype(str)
+                    if "smc_entry_retest_no" in _entry_df.columns:
+                        _entry_text = _entry_text + "<br>Retest #=" + _entry_df["smc_entry_retest_no"].fillna(0).astype(int).astype(str)
                     if "smc_entry_zone_bottom" in _entry_df.columns and "smc_entry_zone_top" in _entry_df.columns:
-                        _entry_text = _entry_text.astype(str) + (
+                        _entry_text = _entry_text + (
                             "<br>Zone="
                             + _entry_df["smc_entry_zone_bottom"].map(lambda v: f"{float(v):,.2f}" if pd.notna(v) else "N/A")
                             + "-"
@@ -3181,8 +3215,8 @@ def render():
                         name="SMC Entry",
                         marker=dict(
                             symbol="triangle-up",
-                            size=12,
-                            color="#22c55e",
+                            size=_entry_sizes,
+                            color=_entry_colors,
                             line=dict(color="#052e16", width=1),
                         ),
                         text=_entry_text,
