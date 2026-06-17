@@ -1,0 +1,103 @@
+name: SMC Realtime Telegram Alerts
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Optional comma-separated symbols, empty = nightly watchlist"
+        required: false
+        default: ""
+      force:
+        description: "Force resend existing signal keys"
+        required: false
+        default: "false"
+      send_test_message:
+        description: "Send a Telegram test message from GitHub Actions, then skip scan"
+        required: false
+        default: "false"
+  schedule:
+    # Asia/Taipei is UTC+8. Run every 15 minutes from 10:00-15:45, plus 16:00.
+    - cron: "*/15 2-7 * * 1-5"
+    - cron: "0 8 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: smc-realtime-alert
+  cancel-in-progress: true
+
+jobs:
+  smc-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests loguru python-dotenv pyarrow
+
+      - name: Send Telegram test message
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.send_test_message == 'true'
+        env:
+          TELEGRAM_SMC_BOT_TOKEN: ${{ secrets.TELEGRAM_SMC_BOT_TOKEN }}
+          TELEGRAM_SMC_CHAT_ID: ${{ secrets.TELEGRAM_SMC_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from src.alerts.telegram import TelegramAlertSender
+
+          sender = TelegramAlertSender(channel="smc")
+          if not sender.is_enabled:
+              raise SystemExit("SMC Telegram sender is not enabled. Check GitHub Secrets.")
+
+          ok = sender.send_text(
+              "<b>SMC GitHub Actions test</b>\n"
+              f"Sent from GitHub at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}."
+          )
+          if not ok:
+              raise SystemExit("Telegram test send failed.")
+          print("Telegram test message sent.")
+          PY
+
+      - name: Run SMC realtime alert scan
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.send_test_message != 'true'
+        env:
+          TELEGRAM_SMC_BOT_TOKEN: ${{ secrets.TELEGRAM_SMC_BOT_TOKEN }}
+          TELEGRAM_SMC_CHAT_ID: ${{ secrets.TELEGRAM_SMC_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          ARGS="--once --market-scope VN_TW --top 80"
+          if [ -n "${{ github.event.inputs.symbols }}" ]; then
+            ARGS="$ARGS --symbols '${{ github.event.inputs.symbols }}'"
+          fi
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force --ignore-market-hours"
+          fi
+          python scripts/smc_realtime_alert_bot.py $ARGS
+
+      - name: Commit alert state
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.send_test_message != 'true'
+        run: |
+          if [ -f data/smc_realtime_alert_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/smc_realtime_alert_state.json
+            git diff --cached --quiet || git commit -m "data: update SMC realtime alert state"
+            git push
+          else
+            echo "No SMC alert state file to commit."
+          fi
