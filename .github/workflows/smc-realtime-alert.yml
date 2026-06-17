@@ -15,6 +15,10 @@ on:
         description: "Send a Telegram test message from GitHub Actions, then skip scan"
         required: false
         default: "false"
+      notify_no_signal:
+        description: "For manual scan, send Telegram status even when no SMC BUY is found"
+        required: false
+        default: "true"
   schedule:
     # Asia/Taipei is UTC+8. Run every 15 minutes from 10:00-15:45, plus 16:00.
     - cron: "*/15 2-7 * * 1-5"
@@ -83,6 +87,12 @@ jobs:
           ARGS="--once --market-scope VN_TW --top 80"
           if [ -n "${{ github.event.inputs.symbols }}" ]; then
             ARGS="$ARGS --symbols '${{ github.event.inputs.symbols }}'"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS="$ARGS --ignore-market-hours"
+          fi
+          if [ "${{ github.event.inputs.notify_no_signal }}" = "true" ]; then
+            ARGS="$ARGS --notify-empty"
           fi
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             ARGS="$ARGS --force --ignore-market-hours"

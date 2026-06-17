@@ -169,6 +169,11 @@ def _send_smc_alert(sender: TelegramAlertSender, symbol: str, market: str, lates
     return sender.send_text(text)
 
 
+def _send_status_message(sender: TelegramAlertSender, text: str) -> None:
+    if sender.is_enabled:
+        sender.send_text(text)
+
+
 def _scan_symbol(symbol: str, lookback_days: int) -> tuple[str, str, pd.Series | None]:
     market = _infer_market(symbol)
     provider = registry.get(market)
@@ -209,11 +214,16 @@ def _market_open_now(scope: str) -> bool:
 
 def run_once(args) -> int:
     symbols = _build_watchlist(args)
-    if not symbols:
-        return 0
     sender = TelegramAlertSender(channel="smc")
     if not sender.is_enabled:
         logger.warning("SMC Telegram bot is not configured.")
+        return 0
+    if not symbols:
+        if args.notify_empty:
+            _send_status_message(
+                sender,
+                "<b>SMC realtime scan</b>\nNo watchlist symbols found. Run nightly scan first or pass symbols manually.",
+            )
         return 0
 
     state = _load_state()
@@ -233,6 +243,13 @@ def run_once(args) -> int:
             logger.success(f"SMC alert sent: {sym}")
     if count:
         _save_state(state)
+    elif args.notify_empty:
+        ts = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
+        _send_status_message(
+            sender,
+            f"<b>SMC realtime scan complete</b>\nNo new SMC BUY alerts found.\n"
+            f"Watchlist: <b>{len(symbols)}</b> symbols\nTime: <b>{ts}</b>",
+        )
     logger.info(f"SMC realtime alerts sent: {count}")
     return count
 
@@ -247,6 +264,7 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Run one scan and exit.")
     parser.add_argument("--force", action="store_true", help="Send even if this signal key was already sent.")
     parser.add_argument("--ignore-market-hours", action="store_true", help="Run even outside VN/TW market hours.")
+    parser.add_argument("--notify-empty", action="store_true", help="Send a Telegram status message when no alert is found.")
     args = parser.parse_args()
 
     if args.once:
@@ -254,6 +272,10 @@ def main() -> None:
             run_once(args)
         else:
             logger.info("Market closed; one-pass SMC scan skipped.")
+            if args.notify_empty:
+                sender = TelegramAlertSender(channel="smc")
+                ts = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
+                _send_status_message(sender, f"<b>SMC realtime scan skipped</b>\nMarket closed.\nTime: <b>{ts}</b>")
         return
 
     logger.info("Realtime SMC alert bot started.")
