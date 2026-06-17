@@ -11,6 +11,7 @@ from src.strategies.alpha_scanner import AlphaScannerEngine
 
 _NIGHTLY_JSON = Path(__file__).resolve().parents[1] / "data" / "nightly_scan_results.json"
 _NIGHTLY_META = Path(__file__).resolve().parents[1] / "data" / "nightly_scan_meta.json"
+_NIGHTLY_SNAPSHOT = Path(__file__).resolve().parents[1] / "data" / "nightly_telegram_snapshot.json"
 
 
 def _load_nightly() -> tuple[pd.DataFrame | None, dict]:
@@ -24,8 +25,72 @@ def _load_nightly() -> tuple[pd.DataFrame | None, dict]:
     except Exception:
         return None, {}
 
+
+def _load_nightly_snapshot() -> dict:
+    if not _NIGHTLY_SNAPSHOT.exists():
+        return {}
+    try:
+        return json.loads(_NIGHTLY_SNAPSHOT.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
 def _fmt_pct(v: float) -> str:
     return f"{v:+.2f}%" if pd.notna(v) else "N/A"
+
+
+def _fmt_price(v: object) -> str:
+    try:
+        num = float(v)
+        if pd.isna(num) or num <= 0:
+            return "N/A"
+        return f"{num:,.2f}"
+    except Exception:
+        return "N/A"
+
+
+def _fmt_score8(v: object) -> str:
+    try:
+        num = float(v)
+        if pd.isna(num):
+            return "N/A"
+        return f"{int(num)}/8"
+    except Exception:
+        return "N/A"
+
+
+def _derive_entry_grade(df: pd.DataFrame) -> pd.Series:
+    """Backfill entry grade for legacy outputs missing the new column."""
+    if df.empty:
+        return pd.Series(dtype=str)
+
+    rec = df.get("recommendation", pd.Series("WATCH", index=df.index)).astype(str).str.upper()
+    inst = pd.to_numeric(df.get("institutional_score", 0.0), errors="coerce").fillna(0.0)
+    conf = pd.to_numeric(df.get("confidence_boosted", 0.0), errors="coerce").fillna(0.0)
+    qmf = pd.to_numeric(df.get("qmf_signal", 0), errors="coerce").fillna(0).astype(int)
+    wy = pd.to_numeric(df.get("wyckoff_score", 0.0), errors="coerce").fillna(0.0)
+    stoch = df.get("stoch_state", pd.Series("", index=df.index)).astype(str).str.upper()
+    veto = df.get("veto", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+
+    grade = pd.Series("C", index=df.index)
+    grade_b = (
+        (~veto)
+        & (rec.isin(["STRONG BUY", "BUY", "WATCH"]))
+        & (inst >= 0.12)
+        & (conf >= 0.08)
+        & (qmf >= 0)
+    )
+    grade_a = (
+        (~veto)
+        & (rec.isin(["STRONG BUY", "BUY"]))
+        & (inst >= 0.35)
+        & (conf >= 0.20)
+        & (qmf >= 0)
+        & (wy >= 0.0)
+        & (stoch != "OVERBOUGHT")
+    )
+    grade.loc[grade_b] = "B"
+    grade.loc[grade_a] = "A"
+    return grade
 
 
 def _apply_preset_filter(df: pd.DataFrame, preset: str) -> pd.DataFrame:
@@ -82,14 +147,18 @@ def render() -> None:
 
     # ── Nightly Pre-Computed Results (fastest path) ────────────────────────────
     nightly_df, meta = _load_nightly()
+    snapshot = _load_nightly_snapshot()
     if nightly_df is not None and not nightly_df.empty:
+        if "entry_quality_grade" not in nightly_df.columns:
+            nightly_df["entry_quality_grade"] = _derive_entry_grade(nightly_df)
         gen_at = meta.get("generated_at_readable", "unknown")
         total = meta.get("total_candidates", len(nightly_df))
         st.success(f"Nightly scan ready — **{total} candidates** | Generated: {gen_at}")
 
         with st.expander("Top 20 Nightly Picks (pre-computed, full 700-stock universe)", expanded=True):
             show_cols = [
-                "symbol", "name", "recommendation", "institutional_score",
+                "symbol", "name", "entry_quality_grade", "recommendation", "institutional_score",
+                "smc_entry_status", "smc_entry_type", "smc_entry_score", "smc_entry_distance_pct",
                 "pred_21d_ret", "pred_63d_ret", "confidence_boosted",
                 "wyckoff_phase", "qmf_score", "stoch_state", "veto", "veto_reason",
             ]
@@ -106,6 +175,10 @@ def render() -> None:
                 display["institutional_score"] = display["institutional_score"].round(3)
             if "qmf_score" in display.columns:
                 display["qmf_score"] = display["qmf_score"].round(2)
+            if "smc_entry_distance_pct" in display.columns:
+                display["smc_entry_distance_pct"] = display["smc_entry_distance_pct"].map(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            if "smc_entry_score" in display.columns:
+                display["smc_entry_score"] = display["smc_entry_score"].map(_fmt_score8)
             if "veto" in display.columns:
                 display["veto"] = display["veto"].map(lambda x: "YES" if x else "NO")
 
@@ -115,10 +188,39 @@ def render() -> None:
             if "recommendation" in nightly_df.columns:
                 m2.metric("STRONG BUY", int((nightly_df["recommendation"] == "STRONG BUY").sum()))
                 m3.metric("BUY", int((nightly_df["recommendation"] == "BUY").sum()))
-            if "veto" in nightly_df.columns:
+            if "entry_quality_grade" in nightly_df.columns:
+                m4.metric("Entry Grade A", int((nightly_df["entry_quality_grade"] == "A").sum()))
+            elif "veto" in nightly_df.columns:
                 m4.metric("Veto Active", int(nightly_df["veto"].sum()) if nightly_df["veto"].dtype == bool else 0)
 
             st.dataframe(display, hide_index=True, use_container_width=True)
+
+            if "smc_entry_status" in nightly_df.columns:
+                smc_ready = nightly_df[
+                    nightly_df["smc_entry_status"].astype(str).str.upper().isin(["READY", "NEAR"])
+                ].copy()
+                if not smc_ready.empty:
+                    st.markdown("**SMC Entry Radar: READY / NEAR**")
+                    smc_ready = smc_ready.sort_values(
+                        by=["smc_entry_status", "smc_entry_score", "institutional_score"],
+                        ascending=[True, False, False],
+                    )
+                    smc_cols = [
+                        "symbol", "market", "entry_quality_grade", "smc_entry_status",
+                        "smc_entry_type", "smc_entry_low", "smc_entry_high",
+                        "smc_entry_stop", "smc_entry_target", "smc_entry_rr",
+                        "smc_entry_score", "smc_entry_distance_pct", "smc_entry_factors",
+                    ]
+                    have_smc = [c for c in smc_cols if c in smc_ready.columns]
+                    smc_display = smc_ready[have_smc].head(20).copy()
+                    for col in ["smc_entry_low", "smc_entry_high", "smc_entry_stop", "smc_entry_target"]:
+                        if col in smc_display.columns:
+                            smc_display[col] = smc_display[col].map(_fmt_price)
+                    if "smc_entry_rr" in smc_display.columns:
+                        smc_display["smc_entry_rr"] = smc_display["smc_entry_rr"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "N/A")
+                    if "smc_entry_distance_pct" in smc_display.columns:
+                        smc_display["smc_entry_distance_pct"] = smc_display["smc_entry_distance_pct"].map(lambda x: f"{float(x):.1f}%" if pd.notna(x) else "N/A")
+                    st.dataframe(smc_display, hide_index=True, use_container_width=True)
 
             if "recommendation" in nightly_df.columns:
                 st.download_button(
@@ -127,6 +229,35 @@ def render() -> None:
                     file_name=f"nightly_alpha_{meta.get('scan_date', datetime.now().strftime('%Y%m%d'))}.csv",
                     mime="text/csv",
                 )
+
+        if snapshot and isinstance(snapshot.get("top_a"), list):
+            with st.expander("Telegram Snapshot (same nightly payload)", expanded=False):
+                st.caption("Bảng này cùng nguồn dữ liệu với tin nhắn Telegram mỗi tối.")
+                top_a = pd.DataFrame(snapshot.get("top_a", []))
+                if not top_a.empty:
+                    show = [
+                        "rank", "symbol", "market", "entry_grade_tactical", "entry_grade_final",
+                        "strategic_tag", "fundamental_grade", "consensus_action",
+                        "recommendation", "institutional_score",
+                        "pred_21d_ret", "pred_63d_ret", "entry", "stop_loss", "target", "rr",
+                    ]
+                    have = [c for c in show if c in top_a.columns]
+                    st.dataframe(top_a[have], hide_index=True, use_container_width=True)
+                c_watch = pd.DataFrame(snapshot.get("grade_c_watchout", []))
+                if not c_watch.empty:
+                    st.markdown("**Grade C Watchout**")
+                    st.dataframe(c_watch, hide_index=True, use_container_width=True)
+                smc_snap = pd.DataFrame(snapshot.get("smc_entry_radar", []))
+                if not smc_snap.empty:
+                    st.markdown("**SMC Entry Radar**")
+                    show = [
+                        "rank", "symbol", "market", "entry_grade", "recommendation",
+                        "smc_entry_status", "smc_entry_type", "smc_entry_low",
+                        "smc_entry_high", "smc_entry_stop", "smc_entry_target",
+                        "smc_entry_rr", "smc_entry_score", "smc_entry_distance_pct",
+                    ]
+                    have = [c for c in show if c in smc_snap.columns]
+                    st.dataframe(smc_snap[have], hide_index=True, use_container_width=True)
         st.markdown("---")
         st.caption("Run live scan below to refresh with real-time data (slower, needs internet)")
     else:
@@ -145,7 +276,7 @@ def render() -> None:
     with st.expander("Scanner Settings", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            extended = st.toggle("Extended VN universe", value=True, key="scanner_extended")
+            extended = st.toggle("Full VN/TW universe", value=True, key="scanner_extended")
         with c2:
             top_n = st.slider("Top picks", min_value=5, max_value=20, value=10, step=1)
         with c3:
@@ -220,6 +351,9 @@ def render() -> None:
         st.warning("Scan completed but no candidates passed engine filters. Try scope=ALL or disable strict assumptions.")
         return
 
+    if "entry_quality_grade" not in df.columns:
+        df["entry_quality_grade"] = _derive_entry_grade(df)
+
     df = df.sort_values("institutional_score", ascending=False).reset_index(drop=True)
     df["Upside 1M"] = df["pred_21d_ret"].map(_fmt_pct)
     df["Upside 3M"] = df["pred_63d_ret"].map(_fmt_pct)
@@ -227,12 +361,25 @@ def render() -> None:
     df["QMF"] = df["qmf_score"].map(lambda x: f"{x:+.2f}")
     df["Wyckoff"] = df["wyckoff_score"].map(lambda x: f"{x:+.2f}")
     df["Veto"] = df["veto"].map(lambda x: "YES" if x else "NO")
+    if "smc_entry_status" in df.columns:
+        df["SMC"] = df["smc_entry_status"].fillna("NONE").astype(str)
+        df["SMC Entry"] = df.apply(
+            lambda r: f"{_fmt_price(r.get('smc_entry_low'))}-{_fmt_price(r.get('smc_entry_high'))}",
+            axis=1,
+        )
+        df["SMC SL"] = df["smc_entry_stop"].map(_fmt_price) if "smc_entry_stop" in df.columns else "N/A"
+        df["SMC TP"] = df["smc_entry_target"].map(_fmt_price) if "smc_entry_target" in df.columns else "N/A"
+        df["SMC R:R"] = df["smc_entry_rr"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "N/A") if "smc_entry_rr" in df.columns else "N/A"
+        df["SMC Score"] = df["smc_entry_score"].map(_fmt_score8) if "smc_entry_score" in df.columns else "N/A"
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total", len(df))
     c2.metric("STRONG BUY", int((df["recommendation"] == "STRONG BUY").sum()))
     c3.metric("BUY", int((df["recommendation"] == "BUY").sum()))
-    c4.metric("Veto Active", int(df["veto"].sum()))
+    if "entry_quality_grade" in df.columns:
+        c4.metric("Entry Grade A", int((df["entry_quality_grade"] == "A").sum()))
+    else:
+        c4.metric("Veto Active", int(df["veto"].sum()))
 
     st.markdown("### Tactical Rules")
     st.caption("Ranking ưu tiên theo institutional_score, loại bỏ setup nhiễu: ưu tiên BUY/STRONG BUY và tránh veto.")
@@ -247,9 +394,31 @@ def render() -> None:
         f"Raw candidates: VN={total_vn}, TW={total_tw} | After tactical filter: VN={int((tradable['market']=='VN').sum())}, TW={int((tradable['market']=='TW').sum())}"
     )
     show_cols = [
-        "symbol", "name", "market", "recommendation", "institutional_score",
+        "symbol", "name", "market", "entry_quality_grade", "recommendation", "institutional_score",
+        "SMC", "SMC Entry", "SMC SL", "SMC TP", "SMC R:R", "SMC Score",
         "Upside 1M", "Upside 3M", "Conf %", "QMF", "Wyckoff", "stoch_state", "Veto", "veto_reason",
     ]
+    show_cols = [c for c in show_cols if c in df.columns]
+
+    if "smc_entry_status" in df.columns:
+        smc_actionable = df[
+            df["smc_entry_status"].astype(str).str.upper().isin(["READY", "NEAR"])
+        ].copy()
+        if not smc_actionable.empty:
+            smc_actionable = smc_actionable.sort_values(
+                by=["smc_entry_status", "smc_entry_score", "institutional_score"],
+                ascending=[True, False, False],
+            )
+            st.markdown("### SMC Entry Radar")
+            st.caption("READY = price inside high-confluence SMC zone. NEAR = within 2% of zone; wait for touch/confirmation.")
+            smc_cols = [
+                "symbol", "name", "market", "entry_quality_grade", "recommendation",
+                "SMC", "smc_entry_type", "SMC Entry", "SMC SL", "SMC TP",
+                "SMC R:R", "SMC Score", "smc_entry_factors",
+            ]
+            smc_cols = [c for c in smc_cols if c in smc_actionable.columns]
+            st.dataframe(smc_actionable[smc_cols].head(max(top_n * 2, 10)), hide_index=True, use_container_width=True)
+
     def _render_regional_tables(data: pd.DataFrame, title: str):
         st.markdown(title)
         t1, t2 = st.tabs(["Vietnam", "Taiwan"])

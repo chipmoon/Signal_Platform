@@ -1636,7 +1636,7 @@ def _render_smc_entry_radar(
         if st.button("Send SMC Telegram Alert", key=f"smc_alert_{symbol}_{market}"):
             try:
                 from src.alerts.telegram import TelegramAlertSender
-                sent = TelegramAlertSender().send_signal_alert(
+                sent = TelegramAlertSender(channel="smc").send_signal_alert(
                     ticker=symbol,
                     signal=1,
                     price=float(smc_state.get("current_price", df["Close"].iloc[-1])),
