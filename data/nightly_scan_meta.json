@@ -1,14 +1,17 @@
 {
-  "generated_at": "2026-06-16T21:07:41.403276",
-  "generated_at_readable": "2026-06-16 21:07:41",
+  "generated_at": "2026-06-17T21:07:04.029428",
+  "generated_at_readable": "2026-06-17 21:07:04",
   "top_n": 20,
   "market_scope": "VN_TW",
-  "total_candidates": 4,
-  "scan_date": "2026-06-16",
+  "total_candidates": 7,
+  "scan_date": "2026-06-17",
   "symbols": [
+    "ONE.VN",
     "HKT.VN",
     "THD.VN",
+    "BSR.VN",
     "VVS.VN",
+    "PNC.VN",
     "KSV.VN"
   ]
 }

@@ -1,15 +1,16 @@
 {
-  "generated_at": "2026-06-16T21:07:49.731998",
-  "scan_date": "2026-06-16",
+  "generated_at": "2026-06-17T21:07:06.888967",
+  "scan_date": "2026-06-17",
   "market_scope": "VN_TW",
-  "total_candidates": 4,
+  "total_candidates": 7,
   "counts": {
     "grade_a_raw": 0,
-    "grade_b_raw": 0,
-    "grade_c_raw": 4,
+    "grade_b_raw": 1,
+    "grade_c_raw": 6,
     "top_a_sent": 0,
     "wave5_caution_in_top_a": 0,
-    "strategic_only_in_top_a": 0
+    "strategic_only_in_top_a": 0,
+    "smc_ready_near": 1
   },
   "notes": {
     "grade_definition": "Entry Grade in scanner is tactical (daily 1-3M setup), not fundamental grade.",
@@ -17,10 +18,30 @@
     "consensus_definition": "Consensus Action combines tactical entry grade + Elliott strategic tag + fundamental quality."
   },
   "top_a": [],
+  "smc_entry_radar": [
+    {
+      "rank": 1,
+      "symbol": "PNC.VN",
+      "market": "VN",
+      "entry_grade": "B",
+      "recommendation": "WATCH",
+      "institutional_score": 0.17485029282242337,
+      "smc_entry_status": "NEAR",
+      "smc_entry_type": "FVG",
+      "smc_entry_low": 29950.0,
+      "smc_entry_high": 31800.0,
+      "smc_entry_stop": 29302.5,
+      "smc_entry_target": 36795.0,
+      "smc_entry_rr": 2.0,
+      "smc_entry_score": 4,
+      "smc_entry_distance_pct": 0.0,
+      "smc_entry_factors": "FVG,ZONE_QUALITY,WYCKOFF,SMC_SIGNAL"
+    }
+  ],
   "grade_c_watchout": [
     {
       "rank": 1,
-      "symbol": "HKT.VN",
+      "symbol": "ONE.VN",
       "market": "VN",
       "entry_grade": "C",
       "institutional_score": 1.0,
@@ -28,6 +49,14 @@
     },
     {
       "rank": 2,
+      "symbol": "HKT.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 1.0,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 3,
       "symbol": "THD.VN",
       "market": "VN",
       "entry_grade": "C",
@@ -35,15 +64,23 @@
       "reason": "Low confidence gate"
     },
     {
-      "rank": 3,
-      "symbol": "VVS.VN",
+      "rank": 4,
+      "symbol": "BSR.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.4601268641687268,
+      "institutional_score": 0.4087143692805751,
       "reason": "Low confidence gate"
     },
     {
-      "rank": 4,
+      "rank": 5,
+      "symbol": "VVS.VN",
+      "market": "VN",
+      "entry_grade": "C",
+      "institutional_score": 0.32357391141560526,
+      "reason": "Low confidence gate"
+    },
+    {
+      "rank": 6,
       "symbol": "KSV.VN",
       "market": "VN",
       "entry_grade": "C",
