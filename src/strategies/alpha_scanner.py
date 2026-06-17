@@ -45,6 +45,10 @@ SCAN_CONFIG = {
     "max_abs_upside_3m_pct": 80.0,
     "min_conf_for_buy": 0.08,
     "min_conf_for_strong_buy": 0.25,
+    # TW has fewer market microstructure features than VN (bank-flow often unavailable),
+    # so we use a softer confidence gate to avoid filtering out all candidates.
+    "min_conf_for_buy_tw": 0.03,
+    "min_conf_for_strong_buy_tw": 0.12,
 }
 
 VN_UNIVERSE_CORE = [
@@ -61,11 +65,20 @@ VN_UNIVERSE_EXTENDED = VN_UNIVERSE_CORE + [
     "SIP", "TCH", "TDM", "TDH", "TIP", "TLG", "TPH", "VCG", "VCI", "VDS",
     "VGC", "VGS", "VHC", "VID", "VIP", "VIX", "VND", "VOS", "VSG", "VTO",
 ]
-TW_UNIVERSE = [
+# Fallback TW list used when plugin import is unavailable.
+TW_UNIVERSE_FALLBACK = [
     "2330", "2317", "2454", "2308", "2303", "2455", "3711", "2382", "3231",
     "2881", "2882", "2891", "2886", "2603", "2609", "1216", "2412", "2409",
     "3008", "2357", "2884", "2379", "8096",
 ]
+
+# Prefer richer curated universe from Taiwan plugin for hidden-gem discovery.
+try:
+    from src.plugins.taiwan import TAIWAN_STOCKS as _TAIWAN_STOCKS
+
+    TW_UNIVERSE = sorted(_TAIWAN_STOCKS.keys())
+except Exception:
+    TW_UNIVERSE = TW_UNIVERSE_FALLBACK
 US_UNIVERSE = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
     "COST", "NFLX", "AMD", "QCOM", "INTC", "MU", "SMCI",
@@ -73,6 +86,42 @@ US_UNIVERSE = [
     "LINK-USD", "AVAX-USD", "GLD", "SLV", "QQQ", "SPY", "TLT", "GDX",
 ]
 COMMODITY_UNIVERSE = ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "ZW=F"]
+
+
+def _get_tw_universe(extended: bool = False) -> list[str]:
+    """Return curated TW symbols, or the full cached TW list for extended scans."""
+    if not extended:
+        return TW_UNIVERSE
+
+    try:
+        provider = registry.get("TW")
+        if provider:
+            assets = provider.search_assets("", limit=5000)
+            symbols = sorted({a.symbol for a in assets if a.symbol})
+            if symbols:
+                return symbols
+    except Exception as exc:
+        logger.debug(f"TW universe cache load failed: {exc}")
+
+    return TW_UNIVERSE
+
+
+def _get_vn_universe(extended: bool = False) -> list[str]:
+    """Return VN core symbols, or the full provider/cache list for extended scans."""
+    if not extended:
+        return VN_UNIVERSE_CORE
+
+    try:
+        provider = registry.get("VN")
+        if provider:
+            assets = provider.search_assets("", limit=5000)
+            symbols = sorted({a.symbol.replace(".VN", "") for a in assets if a.symbol})
+            if symbols:
+                return symbols
+    except Exception as exc:
+        logger.debug(f"VN universe cache load failed: {exc}")
+
+    return VN_UNIVERSE_EXTENDED
 
 
 def _quick_wyckoff_phase(df: pd.DataFrame) -> dict:
@@ -136,7 +185,275 @@ def _quick_wyckoff_phase(df: pd.DataFrame) -> dict:
     return {"phase": phase, "score": score, "in_accumulation": in_accumulation}
 
 
+def _safe_num(v: object, default: float = 0.0) -> float:
+    try:
+        out = float(v)
+        if not np.isfinite(out):
+            return default
+        return out
+    except Exception:
+        return default
+
+
+def _volume_profile_levels_fast(df: pd.DataFrame) -> list[float]:
+    """Lightweight POC/VA approximation for scanner batch mode."""
+    if df is None or df.empty or not {"High", "Low", "Close", "Volume"}.issubset(df.columns):
+        return []
+    recent = df.tail(80).copy()
+    price_min = _safe_num(recent["Low"].min())
+    price_max = _safe_num(recent["High"].max())
+    if price_min <= 0 or price_max <= price_min:
+        return []
+    bins = np.linspace(price_min, price_max, 25)
+    if len(bins) < 3:
+        return []
+    bucket = np.zeros(len(bins) - 1)
+    closes = recent["Close"].to_numpy(dtype=float)
+    volumes = recent["Volume"].to_numpy(dtype=float)
+    for price, vol in zip(closes, volumes):
+        idx = int(np.digitize(price, bins) - 1)
+        idx = max(0, min(idx, len(bucket) - 1))
+        bucket[idx] += max(float(vol), 0.0)
+    if bucket.sum() <= 0:
+        return []
+    top_idx = np.argsort(bucket)[-3:]
+    return [float((bins[i] + bins[i + 1]) / 2.0) for i in top_idx]
+
+
+def _build_smc_entry_candidate(
+    df: pd.DataFrame,
+    smc_state: dict,
+    wyckoff_state: dict,
+    target_price: float = 0.0,
+) -> dict:
+    """Return the best long-only SMC entry candidate for VN/TW batch scanning."""
+    empty = {
+        "smc_entry_status": "NONE",
+        "smc_entry_type": "",
+        "smc_entry_low": 0.0,
+        "smc_entry_high": 0.0,
+        "smc_entry_stop": 0.0,
+        "smc_entry_target": 0.0,
+        "smc_entry_rr": 0.0,
+        "smc_entry_score": 0,
+        "smc_entry_distance_pct": 0.0,
+        "smc_entry_factors": "",
+    }
+    if df is None or df.empty:
+        return empty
+
+    curr = _safe_num(smc_state.get("current_price"), _safe_num(df["Close"].iloc[-1]))
+    if curr <= 0:
+        return empty
+
+    zones: list[dict] = []
+    for fvg in smc_state.get("bull_fvgs", []) or []:
+        zones.append(
+            {
+                "type": "FVG",
+                "top": _safe_num(fvg.get("top")),
+                "bottom": _safe_num(fvg.get("bottom")),
+                "quality": max(0.0, 1.0 - _safe_num(fvg.get("filled_pct"), 1.0)),
+            }
+        )
+    for ob in smc_state.get("bull_obs", []) or []:
+        zones.append(
+            {
+                "type": "OB",
+                "top": _safe_num(ob.get("top")),
+                "bottom": _safe_num(ob.get("bottom")),
+                "quality": _safe_num(ob.get("strength"), 0.0),
+            }
+        )
+    if not zones:
+        return empty
+
+    recent = df.tail(120)
+    swing_high = _safe_num(recent["High"].max())
+    swing_low = _safe_num(recent["Low"].min())
+    swing_diff = max(swing_high - swing_low, 0.0)
+    fib_levels = [
+        swing_high - 0.382 * swing_diff,
+        swing_high - 0.500 * swing_diff,
+        swing_high - 0.618 * swing_diff,
+    ] if swing_diff > 0 else []
+    vp_levels = _volume_profile_levels_fast(df)
+
+    stoch = smc_state.get("stoch", {}) or {}
+    stoch_k = _safe_num(stoch.get("k"), 50.0)
+    stoch_status = str(stoch.get("status", "NEUTRAL")).upper()
+    phase = str(wyckoff_state.get("phase", "")).upper()
+    wyckoff_ok = any(x in phase for x in ["PHASE B", "PHASE C", "PHASE D", "ACCUMULATION", "MARKUP", "RE-ACCUMULATION"])
+    smc_ok = int(_safe_num(smc_state.get("signal"), 0.0)) >= 0
+
+    candidates: list[dict] = []
+    for zone in zones:
+        top = _safe_num(zone.get("top"))
+        bottom = _safe_num(zone.get("bottom"))
+        if top <= 0 or bottom <= 0 or top <= bottom:
+            continue
+        mid = (top + bottom) / 2.0
+        width = top - bottom
+        if abs(mid - curr) / curr > 0.18:
+            continue
+
+        inside = bottom <= curr <= top
+        if curr > top:
+            distance = (curr - top) / curr
+        elif curr < bottom:
+            distance = (bottom - curr) / curr
+        else:
+            distance = 0.0
+
+        score = 1
+        factors = [str(zone.get("type", "SMC"))]
+        if _safe_num(zone.get("quality")) >= 0.35:
+            score += 1
+            factors.append("ZONE_QUALITY")
+        if stoch_status != "OVERBOUGHT":
+            score += 1
+            factors.append("STOCH_OK")
+        if stoch_k <= 35:
+            score += 1
+            factors.append("OVERSOLD")
+        if any(bottom - width <= lvl <= top + width for lvl in vp_levels):
+            score += 1
+            factors.append("VOL_NODE")
+        if any(bottom - width <= lvl <= top + width for lvl in fib_levels):
+            score += 1
+            factors.append("FIB")
+        if wyckoff_ok:
+            score += 1
+            factors.append("WYCKOFF")
+        if smc_state.get("sweep_bull") or smc_state.get("idm_bull"):
+            score += 1
+            factors.append("LIQ_SWEEP")
+        if smc_ok:
+            score += 1
+            factors.append("SMC_SIGNAL")
+
+        stop = max(0.01, bottom - max(width * 0.35, curr * 0.015))
+        risk = max(top - stop, curr * 0.01)
+        target = max(top + risk * 2.0, _safe_num(target_price), curr * 1.05)
+        rr = (target - top) / risk if risk > 0 else 0.0
+
+        if inside and score >= 5:
+            status = "READY"
+        elif distance <= 0.02 and score >= 4:
+            status = "NEAR"
+        elif score >= 4:
+            status = "WATCH"
+        else:
+            status = "WAIT"
+
+        candidates.append(
+            {
+                "smc_entry_status": status,
+                "smc_entry_type": str(zone.get("type", "")),
+                "smc_entry_low": float(bottom),
+                "smc_entry_high": float(top),
+                "smc_entry_stop": float(stop),
+                "smc_entry_target": float(target),
+                "smc_entry_rr": float(rr),
+                "smc_entry_score": int(min(score, 8)),
+                "smc_entry_distance_pct": float(distance * 100.0),
+                "smc_entry_factors": ",".join(factors),
+            }
+        )
+
+    if not candidates:
+        return empty
+
+    rank = {"READY": 0, "NEAR": 1, "WATCH": 2, "WAIT": 3}
+    candidates.sort(
+        key=lambda c: (
+            rank.get(c["smc_entry_status"], 9),
+            -int(c["smc_entry_score"]),
+            _safe_num(c["smc_entry_distance_pct"], 999.0),
+            -_safe_num(c["smc_entry_rr"]),
+        )
+    )
+    return candidates[0]
+
+
 class AlphaScannerEngine:
+    @staticmethod
+    def _grade_entry_quality(
+        recommendation: str,
+        institutional_score: float,
+        confidence_boosted: float,
+        qmf_signal: int,
+        stoch_state: str,
+        wyckoff_score: float,
+        veto: bool,
+        market: str = "VN",
+        smc_entry_status: str = "NONE",
+        smc_entry_score: int = 0,
+    ) -> str:
+        """
+        Grade entry quality for daily trading workflows.
+
+        A: High-conviction setup with clean flow/structure context.
+        B: Tradable setup but not top-tier.
+        C: Caution / avoid for fresh entries.
+        """
+        if veto:
+            return "C"
+
+        rec = str(recommendation or "").upper()
+        stoch = str(stoch_state or "").upper()
+        mkt = str(market or "VN").upper()
+        smc_status = str(smc_entry_status or "NONE").upper()
+        smc_score = int(smc_entry_score or 0)
+        b_conf_min = 0.08
+        a_conf_min = 0.20
+        if mkt == "TW":
+            b_conf_min = 0.03
+            a_conf_min = 0.12
+
+        if (
+            smc_status == "READY"
+            and smc_score >= 6
+            and rec in {"STRONG BUY", "BUY"}
+            and institutional_score >= 0.25
+            and confidence_boosted >= a_conf_min
+            and qmf_signal >= 0
+            and stoch != "OVERBOUGHT"
+            and wyckoff_score >= -0.05
+        ):
+            return "A"
+
+        if (
+            rec in {"STRONG BUY", "BUY"}
+            and institutional_score >= 0.35
+            and confidence_boosted >= a_conf_min
+            and qmf_signal >= 0
+            and stoch != "OVERBOUGHT"
+            and wyckoff_score >= 0.0
+        ):
+            return "A"
+
+        if (
+            smc_status in {"READY", "NEAR"}
+            and smc_score >= 5
+            and rec in {"STRONG BUY", "BUY", "WATCH"}
+            and institutional_score >= 0.08
+            and confidence_boosted >= b_conf_min
+            and qmf_signal >= 0
+            and stoch != "OVERBOUGHT"
+        ):
+            return "B"
+
+        if (
+            rec in {"STRONG BUY", "BUY", "WATCH"}
+            and institutional_score >= 0.12
+            and confidence_boosted >= b_conf_min
+            and qmf_signal >= 0
+        ):
+            return "B"
+
+        return "C"
+
     def __init__(self, extended_universe: bool = False, commodities: bool = False, market_scope: str = "ALL") -> None:
         self.extended_universe = extended_universe
         self.commodities = commodities
@@ -145,12 +462,12 @@ class AlphaScannerEngine:
     def _build_tasks(self) -> list[dict]:
         tasks: list[dict] = []
         if self.market_scope in {"ALL", "VN_TW", "VN"}:
-            vn_list = VN_UNIVERSE_EXTENDED if self.extended_universe else VN_UNIVERSE_CORE
-            for sym in vn_list:
-                tasks.append({"symbol": f"{sym}.VN", "market": "VN", "benchmark": "VNINDEX"})
+            for sym in _get_vn_universe(extended=self.extended_universe):
+                full_sym = sym if str(sym).endswith(".VN") else f"{sym}.VN"
+                tasks.append({"symbol": full_sym, "market": "VN", "benchmark": "VNINDEX"})
         if self.market_scope in {"ALL", "VN_TW", "TW"}:
-            for sym in TW_UNIVERSE:
-                full_sym = f"{sym}.TWO" if sym in ["8096"] else f"{sym}.TW"
+            for sym in _get_tw_universe(extended=self.extended_universe):
+                full_sym = sym if str(sym).endswith((".TW", ".TWO")) else (f"{sym}.TWO" if sym in ["8096"] else f"{sym}.TW")
                 tasks.append({"symbol": full_sym, "market": "TW", "benchmark": "2330.TW"})
         if self.market_scope in {"ALL", "US"}:
             for sym in US_UNIVERSE:
@@ -217,7 +534,15 @@ class AlphaScannerEngine:
             tier_name="Tier2",
         )
 
-        tier2_results.sort(key=lambda x: x.get("institutional_score", -999), reverse=True)
+        def _rank_result(row: dict) -> float:
+            status_bonus = {"READY": 0.12, "NEAR": 0.08, "WATCH": 0.03}.get(
+                str(row.get("smc_entry_status", "NONE")).upper(),
+                0.0,
+            )
+            score_bonus = min(max(_safe_num(row.get("smc_entry_score"), 0.0), 0.0), 8.0) * 0.01
+            return _safe_num(row.get("institutional_score"), -999.0) + status_bonus + score_bonus
+
+        tier2_results.sort(key=_rank_result, reverse=True)
         return tier2_results[: cfg["tier2_top_n"]]
 
     @staticmethod
@@ -411,6 +736,15 @@ class AlphaScannerEngine:
             stoch_state = "OVERBOUGHT" if (stoch_k > 85 and stoch_d > 85) else ("OVERSOLD" if (stoch_k < 15 and stoch_d < 15) else "NEUTRAL")
 
             smc_score = 0.0
+            smc_state = {
+                "smc_score": 0.0,
+                "signal": 0,
+                "structure": "UNKNOWN",
+                "bull_obs": [],
+                "bull_fvgs": [],
+                "current_price": float(df["Close"].iloc[-1]),
+                "stoch": {"k": stoch_k, "d": stoch_d, "status": stoch_state},
+            }
             try:
                 smc_state = SmcAnalyzer(SmcConfig()).get_current_state(df.copy())
                 smc_score = float(smc_state.get("smc_score", 0.0))
@@ -455,19 +789,41 @@ class AlphaScannerEngine:
                 veto_reason = "Oversold + inflow contradiction"
                 score *= 0.65
 
+            min_conf_buy = SCAN_CONFIG["min_conf_for_buy_tw"] if market == "TW" else SCAN_CONFIG["min_conf_for_buy"]
+            min_conf_strong = SCAN_CONFIG["min_conf_for_strong_buy_tw"] if market == "TW" else SCAN_CONFIG["min_conf_for_strong_buy"]
+
             # Confidence gate: avoid high recommendations when model confidence is too low
-            if confidence_boosted < SCAN_CONFIG["min_conf_for_buy"]:
+            if confidence_boosted < min_conf_buy:
                 recommendation = "WATCH"
                 veto = True
                 veto_reason = veto_reason or "Low confidence gate"
-            elif score >= 0.45 and not veto and confidence_boosted >= SCAN_CONFIG["min_conf_for_strong_buy"]:
+            elif score >= 0.45 and not veto and confidence_boosted >= min_conf_strong:
                 recommendation = "STRONG BUY"
-            elif score >= 0.20 and confidence_boosted >= SCAN_CONFIG["min_conf_for_buy"]:
+            elif score >= 0.20 and confidence_boosted >= min_conf_buy:
                 recommendation = "BUY"
             elif score <= -0.25:
                 recommendation = "AVOID"
             else:
                 recommendation = "WATCH"
+
+            smc_entry = _build_smc_entry_candidate(
+                df=df,
+                smc_state=smc_state,
+                wyckoff_state=wy,
+                target_price=ai_target_63d,
+            )
+            entry_quality_grade = AlphaScannerEngine._grade_entry_quality(
+                recommendation=recommendation,
+                institutional_score=score,
+                confidence_boosted=confidence_boosted,
+                qmf_signal=qmf_signal,
+                stoch_state=stoch_state,
+                wyckoff_score=w_score,
+                veto=veto,
+                market=market,
+                smc_entry_status=str(smc_entry.get("smc_entry_status", "NONE")),
+                smc_entry_score=int(smc_entry.get("smc_entry_score", 0)),
+            )
 
             info = provider.search_assets(symbol.replace(".VN", "").replace(".TW", ""), limit=1)
             name = info[0].name if info else symbol
@@ -507,11 +863,14 @@ class AlphaScannerEngine:
                 "stoch_d": stoch_d,
                 "stoch_state": stoch_state,
                 "smc_score": smc_score,
+                "smc_structure": str(smc_state.get("structure", "UNKNOWN")),
+                **smc_entry,
                 "institutional_prior": prior,
                 "institutional_score": score,
                 "veto": veto,
                 "veto_reason": veto_reason,
                 "recommendation": recommendation,
+                "entry_quality_grade": entry_quality_grade,
                 "scan_tier": "DEEP",
             }
         except Exception as exc:
