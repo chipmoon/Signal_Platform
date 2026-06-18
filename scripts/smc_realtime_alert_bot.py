@@ -164,13 +164,15 @@ def _send_smc_alert(sender: TelegramAlertSender, symbol: str, market: str, lates
     factors = html.escape(str(latest.get("smc_entry_factors", "") or ""))
     reason = html.escape(str(latest.get("smc_entry_reason", "") or "SMC tactical entry"))
     date = pd.to_datetime(latest.get("Date")).strftime("%Y-%m-%d")
+    sent_ts = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
     atr_stop = max(0.01, zone_bottom - max((zone_top - zone_bottom) * 0.35, close * 0.015))
     target = max(zone_top + (zone_top - atr_stop) * 2.0, close * 1.05)
     rr = (target - zone_top) / max(zone_top - atr_stop, 1e-9)
 
     text = (
         f"<b>🎯 SMC BUY ALERT — {html.escape(symbol)}</b>\n\n"
-        f"Market: <b>{html.escape(market)}</b> | Date: <b>{date}</b>\n"
+        f"Market: <b>{html.escape(market)}</b> | Signal date: <b>{date}</b>\n"
+        f"Sent: <b>{sent_ts}</b>\n"
         f"Grade: <b>{grade}</b> | Quality: <b>{quality}/10</b> | Retest: <b>#{retest_no}</b>\n"
         f"Close: <b>{_format_price(close, market)}</b> | Low: <b>{_format_price(low, market)}</b>\n"
         f"Zone: <code>{_format_price(zone_bottom, market)} - {_format_price(zone_top, market)}</code>\n"

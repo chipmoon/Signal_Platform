@@ -61,15 +61,19 @@ jobs:
         run: |
           python - <<'PY'
           from datetime import datetime
+          from zoneinfo import ZoneInfo
           from src.alerts.telegram import TelegramAlertSender
 
           sender = TelegramAlertSender(channel="smc")
           if not sender.is_enabled:
               raise SystemExit("SMC Telegram sender is not enabled. Check GitHub Secrets.")
 
+          sent_tw = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
+          sent_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
           ok = sender.send_text(
               "<b>SMC GitHub Actions test</b>\n"
-              f"Sent from GitHub at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}."
+              f"Sent: <b>{sent_tw}</b>\n"
+              f"UTC: <code>{sent_utc}</code>"
           )
           if not ok:
               raise SystemExit("Telegram test send failed.")

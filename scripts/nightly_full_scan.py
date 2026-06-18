@@ -26,6 +26,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -407,8 +408,10 @@ def _send_new_smc_buy_alerts(results: list[dict], top_n: int = 10, force: bool =
             f"<i>Distance:{dist:.1f}% | {factors}</i>"
         )
 
+    sent_ts = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
     msg = (
         f"<b>🎯 SMC BUY ALERT — {scan_date}</b>\n"
+        f"<b>Sent:</b> {sent_ts}\n"
         "<i>Tactical SMC setup mới, đã lọc trùng trong ngày.</i>\n\n"
         + "\n\n".join(lines)
     )
