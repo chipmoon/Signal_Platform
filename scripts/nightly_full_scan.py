@@ -11,7 +11,7 @@ Chay moi toi luc 21:00 (Taiwan UTC+8) tren may local:
 Usage:
     python scripts/nightly_full_scan.py             # Scan + save, no push
     python scripts/nightly_full_scan.py --push      # Scan + save + git push
-    python scripts/nightly_full_scan.py --top 20    # Top N results (default: 20)
+    python scripts/nightly_full_scan.py --top 80    # Top N per market (default: 80)
     python scripts/nightly_full_scan.py --dry-run   # Test without saving
 
 Setup Task Scheduler: chay setup_nightly_task.ps1 (Admin)
@@ -788,7 +788,7 @@ def _fetch_full_vn_universe() -> list[str]:
 
 def _run_full_scan(
     vn_symbols: list[str] | None = None,
-    top_n: int = 20,
+    top_n: int = 80,
     market_scope: str = "VN_TW",
 ) -> list[dict]:
     """
@@ -958,7 +958,7 @@ def _git_push() -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Nightly multi-market alpha scan")
     parser.add_argument("--push", action="store_true", help="Push results to GitHub")
-    parser.add_argument("--top", type=int, default=20, help="Top N results to save (default: 20)")
+    parser.add_argument("--top", type=int, default=80, help="Top N results per market to save (default: 80)")
     parser.add_argument("--dry-run", action="store_true", help="Run scan but don't save")
     parser.add_argument("--no-fetch", action="store_true", help="Use extended hardcoded list only")
     parser.add_argument("--no-smc-alerts", action="store_true", help="Disable dedicated Telegram SMC BUY alerts")
