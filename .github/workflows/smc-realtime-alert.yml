@@ -93,7 +93,7 @@ jobs:
             exit 1
           fi
 
-          ARGS="--once --market-scope VN_TW --top 80"
+          ARGS="--once --market-scope VN_TW --top 80 --candle-interval 1h --lookback-days 45"
           if [ -n "${{ github.event.inputs.symbols }}" ]; then
             ARGS="$ARGS --symbols '${{ github.event.inputs.symbols }}'"
           fi

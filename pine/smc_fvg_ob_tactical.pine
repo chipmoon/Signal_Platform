@@ -1,0 +1,170 @@
+//@version=5
+indicator("SMC FVG/OB Tactical — Python Parity", overlay=true, max_boxes_count=200, max_labels_count=200)
+
+// Use on a 60-minute chart to match the Telegram bot's default --candle-interval 1h.
+
+groupCore = "Python parity settings"
+fvgMinPct = input.float(0.2, "Minimum FVG size (%)", step=0.1, group=groupCore) / 100.0
+obImpulse = input.float(1.5, "OB impulse (ATR)", step=0.1, group=groupCore)
+obLookback = input.int(3, "OB bearish-candle lookback", minval=1, maxval=10, group=groupCore)
+maxZones = input.int(40, "Maximum active zones", minval=5, maxval=100, group=groupCore)
+showZones = input.bool(true, "Show zones", group=groupCore)
+
+rawK = ta.stoch(close, high, low, 14)
+stochK = ta.sma(rawK, 3)
+volMA = ta.sma(volume, 20)
+ret10 = close / close[10] - 1.0
+trueRange = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+atrSma = ta.sma(trueRange, 14)
+
+var float[] zoneTops = array.new_float()
+var float[] zoneBottoms = array.new_float()
+var string[] zoneTypes = array.new_string()
+var int[] zoneBornBars = array.new_int()
+var int[] zoneRetests = array.new_int()
+var int[] zoneLastBars = array.new_int()
+var box[] zoneBoxes = array.new_box()
+
+addZone(float top, float bottom, string zoneType) =>
+    array.push(zoneTops, top)
+    array.push(zoneBottoms, bottom)
+    array.push(zoneTypes, zoneType)
+    array.push(zoneBornBars, bar_index)
+    array.push(zoneRetests, 0)
+    array.push(zoneLastBars, -999)
+    box b = na
+    if showZones
+        b := box.new(bar_index, top, bar_index + 1, bottom, extend=extend.right, bgcolor=color.new(zoneType == "FVG" ? color.green : color.blue, 86), border_color=zoneType == "FVG" ? color.green : color.blue)
+    array.push(zoneBoxes, b)
+    if array.size(zoneTops) > maxZones
+        box oldBox = array.shift(zoneBoxes)
+        if not na(oldBox)
+            box.delete(oldBox)
+        array.shift(zoneTops)
+        array.shift(zoneBottoms)
+        array.shift(zoneTypes)
+        array.shift(zoneBornBars)
+        array.shift(zoneRetests)
+        array.shift(zoneLastBars)
+
+// Python: low[i] > high[i-2], gap >= 0.2% of close.
+if barstate.isconfirmed and bar_index >= 2 and low > high[2]
+    gapPct = (low - high[2]) / close
+    if gapPct >= fvgMinPct
+        addZone(low, high[2], "FVG")
+
+// Python bullish OB: last bearish candle before close-to-close impulse >= 1.5x SMA(TR,14).
+if barstate.isconfirmed and not na(atrSma) and close - close[1] >= obImpulse * atrSma
+    int bearishOffset = na
+    for back = 1 to obLookback
+        if na(bearishOffset) and close[back] < open[back]
+            bearishOffset := back
+    if not na(bearishOffset)
+        addZone(high[bearishOffset], low[bearishOffset], "OB")
+
+bool tacticalBuy = false
+int tacticalQuality = 0
+int tacticalRetest = 0
+float tacticalTop = na
+float tacticalBottom = na
+string tacticalType = ""
+string tacticalFactors = ""
+bool claimedRetest = false
+
+if barstate.isconfirmed and array.size(zoneTops) > 0
+    for i = 0 to array.size(zoneTops) - 1
+        top = array.get(zoneTops, i)
+        bottom = array.get(zoneBottoms, i)
+        born = array.get(zoneBornBars, i)
+        lastRetestBar = array.get(zoneLastBars, i)
+        candleRange = math.max(high - low, syminfo.mintick)
+        lowerWickReject = math.min(open, close) - low >= 0.30 * candleRange
+        wickTouch = low <= top and high >= bottom
+        reclaim = close >= bottom
+        looseConfirm = close >= open or close >= top or lowerWickReject
+        qualifiedRetest = not claimedRetest and bar_index > born and bar_index - lastRetestBar >= 2 and wickTouch and reclaim and looseConfirm and stochK < 80
+
+        if qualifiedRetest
+            claimedRetest := true
+            retestNo = array.get(zoneRetests, i) + 1
+            array.set(zoneRetests, i, retestNo)
+            array.set(zoneLastBars, i, bar_index)
+            q = 0
+            factors = ""
+            if retestNo == 1
+                q += 2
+                factors += "FIRST_RETEST,"
+            else if retestNo == 2
+                q += 1
+                factors += "SECOND_RETEST,"
+            else
+                q -= 1
+                factors += "LATE_RETEST,"
+
+            zoneMid = (top + bottom) / 2.0
+            if close >= top
+                q += 2
+                factors += "RECLAIM_TOP,"
+            else if close >= zoneMid
+                q += 1
+                factors += "MID_RECLAIM,"
+            if close >= open
+                q += 2
+                factors += "BULL_CLOSE,"
+            if (close - low) / candleRange >= 0.55
+                q += 1
+                factors += "STRONG_CLOSE,"
+            if lowerWickReject
+                q += 1
+                factors += "WICK_REJECT,"
+
+            if stochK <= 40
+                q += 2
+                factors += "STOCH_LOW,"
+            else if stochK <= 70
+                q += 1
+                factors += "STOCH_OK,"
+            if volume >= 0.80 * volMA
+                q += 1
+                factors += "VOL_OK,"
+
+            zoneWidthPct = (top - bottom) / close
+            distanceAbove = math.max(close - top, 0.0) / close
+            if zoneWidthPct >= 0.005
+                q += 1
+                factors += "WIDE_FVG,"
+            if distanceAbove <= 0.03
+                q += 1
+                factors += "NEAR_ZONE,"
+            else if distanceAbove > 0.08
+                q -= 2
+                factors += "CHASE,"
+            if stochK >= 75
+                q -= 1
+                factors += "STOCH_HIGH,"
+            if ret10 >= 0.30
+                q -= 2
+                factors += "HOT_RUN,"
+            else if ret10 >= 0.20
+                q -= 1
+                factors += "RUN_EXTENDED,"
+
+            q := math.max(0, math.min(10, q))
+            tacticalOk = q >= 7 and retestNo <= 2 and distanceAbove <= 0.04 and stochK <= 72 and ret10 < 0.25
+            if tacticalOk and not tacticalBuy
+                tacticalBuy := true
+                tacticalQuality := q
+                tacticalRetest := retestNo
+                tacticalTop := top
+                tacticalBottom := bottom
+                tacticalType := array.get(zoneTypes, i)
+                tacticalFactors := factors
+
+plotshape(tacticalBuy, title="SMC Tactical BUY", style=shape.labelup, location=location.belowbar, color=color.lime, text="SMC BUY", textcolor=color.black, size=size.small)
+
+if tacticalBuy
+    label.new(bar_index, low, tacticalType + " #" + str.tostring(tacticalRetest) + " | Q=" + str.tostring(tacticalQuality), style=label.style_label_up, color=color.green, textcolor=color.white)
+
+alertcondition(tacticalBuy, title="SMC Tactical BUY — Python parity", message="SMC_TACTICAL_BUY")
+if tacticalBuy
+    alert("SMC_TACTICAL_BUY|" + syminfo.ticker + "|TF=" + timeframe.period + "|TYPE=" + tacticalType + "|Q=" + str.tostring(tacticalQuality) + "|RETEST=" + str.tostring(tacticalRetest) + "|ZONE=" + str.tostring(tacticalBottom) + "-" + str.tostring(tacticalTop) + "|FACTORS=" + tacticalFactors, alert.freq_once_per_bar_close)

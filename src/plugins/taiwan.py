@@ -377,6 +377,8 @@ class TaiwanStockProvider(AssetProvider):
 
         # 1. Try local OHLCV cache first (populated by nightly scan)
         try:
+            if str(interval).lower() != "1d":
+                raise FileNotFoundError("daily cache bypassed for intraday request")
             cache_dir = Path(__file__).resolve().parents[2] / ".cache" / "ohlcv"
             for fname in [f"{yahoo_symbol}.parquet", f"{clean_code}.TW.parquet", f"{clean_code}.TWO.parquet",
                           f"{yahoo_symbol}.csv", f"{clean_code}.TW.csv", f"{clean_code}.TWO.csv"]:

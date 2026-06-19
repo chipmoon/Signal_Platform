@@ -13,11 +13,12 @@ Architecture:
 
 from __future__ import annotations
 
+import io
 import os
 import threading
 import concurrent.futures
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -163,7 +164,7 @@ class VietnamStockProviderV2(AssetProvider):
 
         # TvDatafeed instance (lazy init)
         self._tv: Optional[TvDatafeed] = None
-        self._vnstock_source_timeout_sec = 4
+        self._vnstock_source_timeout_sec = 8
         self._vnstock_max_sources = 2
 
     def _get_tv(self) -> Optional[TvDatafeed]:
@@ -376,12 +377,12 @@ class VietnamStockProviderV2(AssetProvider):
             else interval
         )
 
-        # Try cache first
-        cached = cache.get_cached_price_data(
+        # Try daily cache first; the legacy cache key has no interval.
+        cached = None if interval_l != "1d" else cache.get_cached_price_data(
             base_symbol, "VN", max_age_hours=24, start=start, end=end
         )
         if cached is not None and not cached.empty and "VNI" in cached.columns:
-            if interval_l != "1d" or self._cache_has_latest_daily(cached, end):
+            if self._cache_has_latest_daily(cached, end):
                 logger.info(f"Using cached enriched data for {base_symbol}")
                 return cached
             logger.info(f"Cached data for {base_symbol} is missing latest VN session; refreshing from provider")
@@ -435,7 +436,8 @@ class VietnamStockProviderV2(AssetProvider):
                             logger.warning(f"VN signal enrichment failed: {_safe_err(ex)}")
 
                     # Cache and return
-                    cache.cache_price_data(base_symbol, "VN", df)
+                    if interval_l == "1d":
+                        cache.cache_price_data(base_symbol, "VN", df)
                     return df
             except Exception as e:
                 logger.warning(f"vnstock failed for {base_symbol}: {_safe_err(e)}")
@@ -523,14 +525,16 @@ class VietnamStockProviderV2(AssetProvider):
         """Fetch from vnstock API."""
         logger.info(f"Fetching {symbol} ({interval}) from vnstock ({start} to {end})")
 
-        sources = ['VCI', 'TCBS', 'SSI', 'VND'][: self._vnstock_max_sources]
+        # Current vnstock quote providers with working intraday history.
+        sources = ['VCI', 'KBS'][: self._vnstock_max_sources]
         df = None
         
         for source in sources:
             try:
                 def _fetch_once() -> Optional[pd.DataFrame]:
                     with _temporary_disable_broken_loopback_proxy():
-                        stock = Vnstock().stock(symbol=symbol, source=source)
+                        with redirect_stdout(io.StringIO()):
+                            stock = Vnstock().stock(symbol=symbol, source=source)
                         return stock.quote.history(start=start, end=end, interval=interval)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -557,6 +561,13 @@ class VietnamStockProviderV2(AssetProvider):
             'volume': 'Volume'
         }
         df = df.rename(columns=column_map)
+
+        # VCI intraday prices are quoted in thousand VND (for example 26.05),
+        # while the rest of this project uses VND (26,050).
+        interval_l = str(interval).lower()
+        if interval_l != "1d" and pd.to_numeric(df["Close"], errors="coerce").median() < 1000:
+            for price_col in ["Open", "High", "Low", "Close"]:
+                df[price_col] = pd.to_numeric(df[price_col], errors="coerce") * 1000.0
 
         # Normalize optional real-flow columns when available from source
         optional_aliases = {

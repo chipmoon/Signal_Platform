@@ -1,7 +1,7 @@
 """
 Realtime SMC Telegram Alert Bot
 ===============================
-Local polling monitor for tactical SMC BUY entries during market hours.
+Local polling monitor for confirmed tactical SMC BUY entries during market hours.
 
 Default behavior:
   - Uses the top symbols from data/nightly_scan_results.json as a fast watchlist.
@@ -10,7 +10,7 @@ Default behavior:
 
 Examples:
   python scripts/smc_realtime_alert_bot.py --once
-  python scripts/smc_realtime_alert_bot.py --interval-min 15 --top 120
+  python scripts/smc_realtime_alert_bot.py --interval-min 15 --candle-interval 1h --top 120
   python scripts/smc_realtime_alert_bot.py --symbols 8096.TWO,2330.TW,BSR.VN --once
 """
 
@@ -93,6 +93,38 @@ def _expected_session_date(market: str) -> pd.Timestamp:
     return pd.Timestamp(_previous_weekday(today))
 
 
+def _market_now(market: str) -> datetime:
+    tz_name = "Asia/Ho_Chi_Minh" if market == "VN" else "Asia/Taipei"
+    return datetime.now(ZoneInfo(tz_name))
+
+
+def _confirmed_candles(df: pd.DataFrame, market: str, interval: str) -> pd.DataFrame:
+    """Keep closed bars and reject daily cache leaked into intraday scans."""
+    if df is None or df.empty or "Date" not in df.columns:
+        return pd.DataFrame()
+    out = df.copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out = out.dropna(subset=["Date"])
+    if out.empty:
+        return out
+    if str(interval).lower() == "1d":
+        return out.sort_values("Date").drop_duplicates("Date", keep="last")
+
+    dates = out["Date"].dt.tz_localize(None) if out["Date"].dt.tz is not None else out["Date"]
+    has_time = bool((dates != dates.dt.normalize()).any())
+    multiple_per_day = bool(dates.dt.normalize().duplicated().any())
+    if not has_time and not multiple_per_day:
+        logger.warning(f"Rejecting daily OHLCV returned for interval={interval}")
+        return pd.DataFrame()
+
+    minutes = {"15m": 15, "1h": 60}.get(str(interval).lower())
+    if minutes is None:
+        raise ValueError(f"Unsupported realtime candle interval: {interval}")
+    cutoff = pd.Timestamp(_market_now(market)).tz_localize(None).floor(f"{minutes}min")
+    out["Date"] = dates.values
+    return out.loc[out["Date"] < cutoff].sort_values("Date").drop_duplicates("Date", keep="last")
+
+
 def _load_symbols_from_nightly(top: int, scope: str) -> list[str]:
     scope = (scope or "VN_TW").upper()
     if not NIGHTLY_JSON.exists():
@@ -139,7 +171,8 @@ def _build_watchlist(args) -> list[str]:
 
 
 def _alert_key(symbol: str, latest: pd.Series) -> str:
-    date = pd.to_datetime(latest.get("Date")).strftime("%Y-%m-%d")
+    candle = pd.to_datetime(latest.get("Date"))
+    date = candle.strftime("%Y-%m-%d")
     zbot = _safe_float(latest.get("smc_entry_zone_bottom", 0.0))
     ztop = _safe_float(latest.get("smc_entry_zone_top", 0.0))
     return f"{symbol.upper()}|{date}|{zbot:.2f}-{ztop:.2f}"
@@ -163,7 +196,8 @@ def _send_smc_alert(sender: TelegramAlertSender, symbol: str, market: str, lates
     retest_no = int(_safe_float(latest.get("smc_entry_retest_no", 0.0)))
     factors = html.escape(str(latest.get("smc_entry_factors", "") or ""))
     reason = html.escape(str(latest.get("smc_entry_reason", "") or "SMC tactical entry"))
-    date = pd.to_datetime(latest.get("Date")).strftime("%Y-%m-%d")
+    candle = pd.to_datetime(latest.get("Date"))
+    signal_time = candle.strftime("%Y-%m-%d %H:%M")
     sent_ts = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M Asia/Taipei")
     atr_stop = max(0.01, zone_bottom - max((zone_top - zone_bottom) * 0.35, close * 0.015))
     target = max(zone_top + (zone_top - atr_stop) * 2.0, close * 1.05)
@@ -171,7 +205,7 @@ def _send_smc_alert(sender: TelegramAlertSender, symbol: str, market: str, lates
 
     text = (
         f"<b>🎯 SMC BUY ALERT — {html.escape(symbol)}</b>\n\n"
-        f"Market: <b>{html.escape(market)}</b> | Signal date: <b>{date}</b>\n"
+        f"Market: <b>{html.escape(market)}</b> | Closed candle: <b>{signal_time}</b>\n"
         f"Sent: <b>{sent_ts}</b>\n"
         f"Grade: <b>{grade}</b> | Quality: <b>{quality}/10</b> | Retest: <b>#{retest_no}</b>\n"
         f"Close: <b>{_format_price(close, market)}</b> | Low: <b>{_format_price(low, market)}</b>\n"
@@ -188,18 +222,23 @@ def _send_status_message(sender: TelegramAlertSender, text: str) -> None:
         sender.send_text(text)
 
 
-def _scan_symbol(symbol: str, lookback_days: int) -> tuple[str, str, pd.Series | None]:
+def _scan_symbol(
+    symbol: str,
+    lookback_days: int,
+    candle_interval: str = "1h",
+) -> tuple[str, str, pd.Series | None]:
     market = _infer_market(symbol)
     provider = registry.get(market)
     if not provider:
         return symbol, market, None
     # Daily providers such as yfinance treat end as exclusive; use tomorrow so
     # today's candle can be included when the upstream source has published it.
-    market_now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh" if market == "VN" else "Asia/Taipei"))
+    market_now = _market_now(market)
     end = (market_now + timedelta(days=1)).strftime("%Y-%m-%d")
     start = (market_now - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     try:
-        df = provider.get_price_data(symbol, start, end, interval="1d")
+        df = provider.get_price_data(symbol, start, end, interval=candle_interval)
+        df = _confirmed_candles(df, market, candle_interval)
         if df is None or df.empty or len(df) < 40:
             return symbol, market, None
         out = SmcAnalyzer(SmcConfig()).generate_signals(df)
@@ -213,8 +252,7 @@ def _scan_symbol(symbol: str, lookback_days: int) -> tuple[str, str, pd.Series |
             )
             return symbol, market, None
         tactical = int(_safe_float(latest.get("smc_entry_tactical_signal", 0.0))) == 1
-        quality = _safe_float(latest.get("smc_entry_quality", 0.0))
-        if tactical or quality >= 8:
+        if tactical:
             return symbol, market, latest
     except Exception as exc:
         logger.debug(f"SMC scan failed [{symbol}]: {exc}")
@@ -256,7 +294,7 @@ def run_once(args) -> int:
     count = 0
     logger.info(f"Scanning {len(symbols)} symbols for realtime SMC alerts...")
     for symbol in symbols:
-        sym, market, latest = _scan_symbol(symbol, args.lookback_days)
+        sym, market, latest = _scan_symbol(symbol, args.lookback_days, args.candle_interval)
         if latest is None:
             continue
         key = _alert_key(sym, latest)
@@ -286,7 +324,13 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=120, help="Top nightly symbols to watch when --symbols is empty.")
     parser.add_argument("--market-scope", default="VN_TW", choices=["VN", "TW", "VN_TW", "ALL"])
     parser.add_argument("--interval-min", type=int, default=15, help="Polling interval when not --once.")
-    parser.add_argument("--lookback-days", type=int, default=220)
+    parser.add_argument("--lookback-days", type=int, default=45)
+    parser.add_argument(
+        "--candle-interval",
+        default="1h",
+        choices=["15m", "1h", "1d"],
+        help="OHLCV timeframe; polling frequency is configured separately.",
+    )
     parser.add_argument("--once", action="store_true", help="Run one scan and exit.")
     parser.add_argument("--force", action="store_true", help="Send even if this signal key was already sent.")
     parser.add_argument("--ignore-market-hours", action="store_true", help="Run even outside VN/TW market hours.")

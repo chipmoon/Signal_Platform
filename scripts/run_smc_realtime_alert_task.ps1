@@ -20,7 +20,7 @@ function Write-TaskLog {
 Write-TaskLog "SMC realtime alert task started."
 Write-TaskLog "Running one scan pass from nightly watchlist."
 
-& $pythonExe $botScript --once --market-scope VN_TW --top 120
+& $pythonExe $botScript --once --market-scope VN_TW --top 120 --candle-interval 1h --lookback-days 45
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -eq 0) {
