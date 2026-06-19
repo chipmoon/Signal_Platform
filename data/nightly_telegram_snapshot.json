@@ -1,29 +1,75 @@
 {
-  "generated_at": "2026-06-18T21:06:44.189136",
-  "scan_date": "2026-06-18",
+  "generated_at": "2026-06-19T21:06:58.160559",
+  "scan_date": "2026-06-19",
   "market_scope": "VN_TW",
-  "total_candidates": 4,
+  "total_candidates": 3,
   "counts": {
-    "grade_a_raw": 0,
+    "grade_a_raw": 1,
     "grade_b_raw": 0,
-    "grade_c_raw": 4,
-    "top_a_sent": 0,
+    "grade_c_raw": 2,
+    "top_a_sent": 1,
     "wave5_caution_in_top_a": 0,
     "strategic_only_in_top_a": 0,
-    "smc_ready_near": 0
+    "smc_ready_near": 1
   },
   "notes": {
     "grade_definition": "Entry Grade in scanner is tactical (daily 1-3M setup), not fundamental grade.",
     "strategic_definition": "Elliott weekly layer adds caution when Wave 5 / strategic-only context appears.",
     "consensus_definition": "Consensus Action combines tactical entry grade + Elliott strategic tag + fundamental quality."
   },
-  "top_a": [],
-  "smc_entry_radar": [],
-  "grade_c_watchout": [
+  "top_a": [
     {
       "rank": 1,
       "symbol": "HKT.VN",
       "market": "VN",
+      "entry_grade_tactical": "A",
+      "entry_grade_final": "A",
+      "strategic_tag": "OK",
+      "strategic_detail": "wave=5 conf=52%",
+      "fundamental_grade": "B",
+      "fundamental_score": 57,
+      "consensus_action": "BUY",
+      "recommendation": "STRONG BUY",
+      "institutional_score": 1.0,
+      "pred_21d_ret": 41.17775540403657,
+      "pred_63d_ret": 80.0,
+      "entry": 20.05,
+      "stop_loss": 19.7015,
+      "target": 38.22900082726106,
+      "rr": 45.493101197643576,
+      "smc_entry_status": "NEAR",
+      "smc_entry_type": "FVG",
+      "smc_entry_low": 20.0,
+      "smc_entry_high": 20.1,
+      "smc_entry_score": 5,
+      "smc_entry_distance_pct": 0.5025125628140775
+    }
+  ],
+  "smc_entry_radar": [
+    {
+      "rank": 1,
+      "symbol": "HKT.VN",
+      "market": "VN",
+      "entry_grade": "A",
+      "recommendation": "STRONG BUY",
+      "institutional_score": 1.0,
+      "smc_entry_status": "NEAR",
+      "smc_entry_type": "FVG",
+      "smc_entry_low": 20.0,
+      "smc_entry_high": 20.1,
+      "smc_entry_stop": 19.7015,
+      "smc_entry_target": 38.22900082726106,
+      "smc_entry_rr": 45.493101197643576,
+      "smc_entry_score": 5,
+      "smc_entry_distance_pct": 0.5025125628140775,
+      "smc_entry_factors": "FVG,ZONE_QUALITY,STOCH_OK,WYCKOFF,SMC_SIGNAL"
+    }
+  ],
+  "grade_c_watchout": [
+    {
+      "rank": 1,
+      "symbol": "3357.TWO",
+      "market": "TW",
       "entry_grade": "C",
       "institutional_score": 1.0,
       "reason": "Low confidence gate"
@@ -33,29 +79,12 @@
       "symbol": "THD.VN",
       "market": "VN",
       "entry_grade": "C",
-      "institutional_score": 0.5561677710028444,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 3,
-      "symbol": "VVS.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": 0.10341908570687333,
-      "reason": "Low confidence gate"
-    },
-    {
-      "rank": 4,
-      "symbol": "KSV.VN",
-      "market": "VN",
-      "entry_grade": "C",
-      "institutional_score": -0.37517855221149365,
+      "institutional_score": 0.5497171415496869,
       "reason": "Low confidence gate"
     }
   ],
   "tips": [
     "Ít Grade A: giảm tần suất vào lệnh mới, ưu tiên bảo toàn vốn.",
-    "Grade C chiếm cao: thị trường nhiễu/phân phối, chỉ giữ setup mạnh.",
-    "Nhiều mã bị veto: tránh FOMO, chờ xác nhận thêm 1 phiên."
+    "Grade C chiếm cao: thị trường nhiễu/phân phối, chỉ giữ setup mạnh."
   ]
 }

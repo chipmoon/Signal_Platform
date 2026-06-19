@@ -1,14 +1,13 @@
 {
-  "generated_at": "2026-06-18T21:06:41.479142",
-  "generated_at_readable": "2026-06-18 21:06:41",
+  "generated_at": "2026-06-19T21:06:49.641391",
+  "generated_at_readable": "2026-06-19 21:06:49",
   "top_n": 80,
   "market_scope": "VN_TW",
-  "total_candidates": 4,
-  "scan_date": "2026-06-18",
+  "total_candidates": 3,
+  "scan_date": "2026-06-19",
   "symbols": [
     "HKT.VN",
-    "THD.VN",
-    "VVS.VN",
-    "KSV.VN"
+    "3357.TWO",
+    "THD.VN"
   ]
 }
