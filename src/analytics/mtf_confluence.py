@@ -20,6 +20,7 @@ from loguru import logger
 from src.config import SmcConfig, WyckoffConfig
 from src.strategies.smc_analyzer import SmcAnalyzer
 from src.strategies.wyckoff_analyzer import WyckoffAnalyzer
+from src.vn_price import normalize_vn_ohlcv
 
 
 # ─── Timeframe Definitions ────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ def _fetch_tf(yf_ticker: str, interval: str, period: str, symbol: str = "", mark
                 daily_df = pd.read_parquet(cache_path, engine="pyarrow")
                 if not daily_df.empty:
                     daily_df = _normalize_df(daily_df)
+                    daily_df = normalize_vn_ohlcv(daily_df, symbol=clean_sym)
                     
                     if interval == "1wk":
                         # Resample daily to weekly

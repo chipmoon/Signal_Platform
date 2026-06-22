@@ -13,8 +13,8 @@ Architecture:
 
 from __future__ import annotations
 
-import io
 import os
+import io
 import threading
 import concurrent.futures
 from pathlib import Path
@@ -28,6 +28,7 @@ from loguru import logger
 
 from .base import AssetInfo, AssetProvider
 from ..cache_manager import cache
+from src.vn_price import normalize_vn_ohlcv, normalize_vn_price_value
 
 PROXY_ENV_KEYS = [
     "HTTP_PROXY",
@@ -378,13 +379,13 @@ class VietnamStockProviderV2(AssetProvider):
         )
 
         # Try daily cache first; the legacy cache key has no interval.
-        cached = None if interval_l != "1d" else cache.get_cached_price_data(
+        cached = None if interval_l != '1d' else cache.get_cached_price_data(
             base_symbol, "VN", max_age_hours=24, start=start, end=end
         )
         if cached is not None and not cached.empty and "VNI" in cached.columns:
             if self._cache_has_latest_daily(cached, end):
                 logger.info(f"Using cached enriched data for {base_symbol}")
-                return cached
+                return normalize_vn_ohlcv(cached, symbol=base_symbol)
             logger.info(f"Cached data for {base_symbol} is missing latest VN session; refreshing from provider")
 
         # Try primary fetch (vnstock)
@@ -400,6 +401,7 @@ class VietnamStockProviderV2(AssetProvider):
                 df = self._fetch_from_vnstock(base_symbol, start, end, fetch_interval)
                 
                 if df is not None and not df.empty:
+                    df = normalize_vn_ohlcv(df, symbol=base_symbol)
                     if resample_4h:
                         logger.info(f"Resampling 1H to 4H for {base_symbol}")
                         df = df.set_index('Date').resample('4H').agg({
@@ -447,7 +449,7 @@ class VietnamStockProviderV2(AssetProvider):
             try:
                 df = self._fetch_from_tradingview(base_symbol, start, end, interval=interval_l)
                 if df is not None and not df.empty:
-                    return df
+                    return normalize_vn_ohlcv(df, symbol=base_symbol)
             except Exception as e:
                 logger.warning(f"TvDatafeed fallback failed for {base_symbol}: {_safe_err(e)}")
 
@@ -456,7 +458,7 @@ class VietnamStockProviderV2(AssetProvider):
             try:
                 df = self._fetch_from_yfinance(base_symbol, start, end, interval_l)
                 if df is not None and not df.empty:
-                    return df
+                    return normalize_vn_ohlcv(df, symbol=base_symbol)
             except Exception as e:
                 logger.warning(f"yfinance intraday fallback failed for {base_symbol}: {_safe_err(e)}")
 
@@ -469,6 +471,7 @@ class VietnamStockProviderV2(AssetProvider):
         try:
             df = self._fetch_from_yfinance(base_symbol, start, end, interval)
             if df is not None and not df.empty:
+                df = normalize_vn_ohlcv(df, symbol=base_symbol)
                 cache.cache_price_data(base_symbol, "VN", df)  # warm cache
                 return df
         except Exception as e:
@@ -480,7 +483,7 @@ class VietnamStockProviderV2(AssetProvider):
         )
         if stale_cache is not None and not stale_cache.empty:
             logger.warning(f"Serving stale cache for {base_symbol}")
-            return stale_cache
+            return normalize_vn_ohlcv(stale_cache, symbol=base_symbol)
 
         raise ValueError(f"No data for {base_symbol} from any source (vnstock/TvDatafeed/yfinance/cache)")
 
@@ -562,12 +565,8 @@ class VietnamStockProviderV2(AssetProvider):
         }
         df = df.rename(columns=column_map)
 
-        # VCI intraday prices are quoted in thousand VND (for example 26.05),
-        # while the rest of this project uses VND (26,050).
-        interval_l = str(interval).lower()
-        if interval_l != "1d" and pd.to_numeric(df["Close"], errors="coerce").median() < 1000:
-            for price_col in ["Open", "High", "Low", "Close"]:
-                df[price_col] = pd.to_numeric(df[price_col], errors="coerce") * 1000.0
+        # All VN price endpoints are normalized to VND at the provider boundary.
+        df = normalize_vn_ohlcv(df, symbol=symbol)
 
         # Normalize optional real-flow columns when available from source
         optional_aliases = {
@@ -763,7 +762,7 @@ class VietnamStockProviderV2(AssetProvider):
 
                 if df_1h is not None and not df_1h.empty:
                     latest = df_1h.iloc[-1]
-                    price = float(latest['close'])
+                    price = normalize_vn_price_value(latest['close'], symbol=base_symbol)
 
                     # Get previous day's close for change calculation
                     with _temporary_disable_broken_loopback_proxy():
@@ -773,9 +772,9 @@ class VietnamStockProviderV2(AssetProvider):
                         )
                     prev_close = price
                     if df_daily is not None and len(df_daily) >= 2:
-                        prev_close = float(df_daily.iloc[-2]['close'])
+                        prev_close = normalize_vn_price_value(df_daily.iloc[-2]['close'], symbol=base_symbol)
                     elif df_daily is not None and len(df_daily) >= 1:
-                        prev_close = float(df_daily.iloc[-1]['close'])
+                        prev_close = normalize_vn_price_value(df_daily.iloc[-1]['close'], symbol=base_symbol)
 
                     change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
 
@@ -785,8 +784,8 @@ class VietnamStockProviderV2(AssetProvider):
                         change=round(change, 2),
                         prev_close=prev_close,
                         volume=float(latest.get('volume', 0)),
-                        high=float(latest.get('high', price)),
-                        low=float(latest.get('low', price)),
+                        high=normalize_vn_price_value(latest.get('high', price), symbol=base_symbol),
+                        low=normalize_vn_price_value(latest.get('low', price), symbol=base_symbol),
                         timestamp=now.isoformat(),
                         source='vnstock_intraday',
                         is_market_open=is_market_open,
@@ -807,9 +806,9 @@ class VietnamStockProviderV2(AssetProvider):
                     if df_tv is not None and not df_tv.empty:
                         df_tv = df_tv.reset_index()
                         latest = df_tv.iloc[-1]
-                        price = float(latest['close'])
+                        price = normalize_vn_price_value(latest['close'], symbol=base_symbol)
                         prev = df_tv.iloc[-2] if len(df_tv) >= 2 else latest
-                        prev_close = float(prev['close'])
+                        prev_close = normalize_vn_price_value(prev['close'], symbol=base_symbol)
                         change = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
 
                         return RealtimeQuote(
@@ -818,8 +817,8 @@ class VietnamStockProviderV2(AssetProvider):
                             change=round(change, 2),
                             prev_close=prev_close,
                             volume=float(latest.get('volume', 0)),
-                            high=float(latest.get('high', price)),
-                            low=float(latest.get('low', price)),
+                            high=normalize_vn_price_value(latest.get('high', price), symbol=base_symbol),
+                            low=normalize_vn_price_value(latest.get('low', price), symbol=base_symbol),
                             timestamp=now.isoformat(),
                             source='tvdatafeed',
                             is_market_open=is_market_open,

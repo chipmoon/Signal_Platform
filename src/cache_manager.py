@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from loguru import logger
+from src.vn_price import normalize_vn_ohlcv
 
 
 _SCALE_JUMP_THRESHOLD = 2.0   # log-return magnitude signaling a unit change
@@ -222,6 +223,8 @@ class CacheManager:
 
         if df.empty:
             return
+        if str(market).upper() == "VN":
+            df = normalize_vn_ohlcv(df, symbol=self._clean_symbol(symbol))
 
         # Merge with existing cache (append new data)
         existing = self.get_cached_price_data(symbol, market, max_age_hours=999999)
@@ -285,6 +288,9 @@ class CacheManager:
 
         try:
             df = pd.read_parquet(path, engine="pyarrow")
+
+            if str(market).upper() == "VN":
+                df = normalize_vn_ohlcv(df, symbol=self._clean_symbol(symbol))
 
             # Sanitize scale discontinuities on every read (self-healing)
             df = _sanitize_price_scale(df, label=f"{symbol}_{market}_read")

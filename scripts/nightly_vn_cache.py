@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from loguru import logger
+from src.vn_price import normalize_vn_ohlcv
 
 # ── Top VN stocks (expanded to ~115, includes oil&gas, steel, aviation) ──────────
 TOP_VN_STOCKS = [
@@ -80,7 +81,8 @@ def fetch_with_vnstock(symbol: str, start: str, end: str) -> pd.DataFrame | None
                    "low": "Low", "close": "Close", "volume": "Volume"}
         df = df.rename(columns=col_map)
         df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-        return df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        return normalize_vn_ohlcv(df, symbol=symbol)
     except Exception as e:
         logger.debug(f"vnstock failed for {symbol}: {e}")
         return None
@@ -99,7 +101,8 @@ def fetch_with_yfinance(symbol: str, start: str, end: str) -> pd.DataFrame | Non
         if "Datetime" in df.columns:
             df = df.rename(columns={"Datetime": "Date"})
         df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-        return df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        return normalize_vn_ohlcv(df, symbol=symbol)
     except Exception as e:
         logger.debug(f"yfinance failed for {symbol}: {e}")
         return None
@@ -110,7 +113,7 @@ def save_cache(symbol: str, df: pd.DataFrame, cache_dir: Path) -> None:
     from src.cache_manager import CacheManager
 
     cm = CacheManager(str(cache_dir))
-    cm.cache_price_data(symbol, "VN", df)
+    cm.cache_price_data(symbol, "VN", normalize_vn_ohlcv(df, symbol=symbol))
 
 
 def update_stock_list_cache(symbols: list[str], cache_dir: Path) -> None:

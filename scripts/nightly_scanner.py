@@ -37,6 +37,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 from loguru import logger
+from src.vn_price import normalize_vn_ohlcv
 
 # ── Optional rich progress bar ────────────────────────────────────────────────
 try:
@@ -213,6 +214,8 @@ def _load_price_df(symbol: str, market: str) -> Optional[pd.DataFrame]:
         df = _sanitize_price_scale(df, path)
         if df is None:
             return None
+        if market == "VN":
+            df = normalize_vn_ohlcv(df, symbol=symbol)
         return df if len(df) >= 60 else None
     except Exception as e:
         logger.debug(f"Price load failed for {symbol}: {e}")
@@ -237,7 +240,10 @@ def _fetch_price_from_api(symbol: str, market: str) -> Optional[pd.DataFrame]:
         if "Datetime" in df.columns:
             df = df.rename(columns={"Datetime": "Date"})
         df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-        return df[["Date", "Open", "High", "Low", "Close", "Volume"]] if len(df) >= 60 else None
+        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        if market == "VN":
+            df = normalize_vn_ohlcv(df, symbol=symbol)
+        return df if len(df) >= 60 else None
     except Exception:
         return None
 

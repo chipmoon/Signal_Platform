@@ -33,6 +33,8 @@ from src.strategies.quant_money_flow import QuantMoneyFlowAnalyzer
 from src.strategies.live_geo_osint import LiveGeoOsintEngine
 from src.risk_manager import calculate_var
 from src.llm_advisor import advisor
+from src.analytics.intraday_plan import build_intraday_plan, validate_intraday_bars
+from src.vn_price import normalize_vn_ohlcv
 # ── Phase 1-4: Advanced Analysis Modules ──────────────────────────────────────
 try:
     from src.analytics.mtf_confluence import compute_mtf_confluence
@@ -858,9 +860,7 @@ def _render_wyckoff_panel(df: pd.DataFrame):
 def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict, predictions: dict, scalp_intel: dict = None, symbol: str = "", market: str = ""):
     """Render the Unified Professional Execution Panel (Strategic Hub Roadmap)."""
     p1 = predictions.get(1, {})
-    p63 = predictions.get(63, {})
     daily_bias = p1.get("bias", "🟡 NEUTRAL")
-    lt_bias = p63.get("bias", "🟡 NEUTRAL")
     
     def fmt(val):
         if val is None:
@@ -891,92 +891,64 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             # Use real-time price if available in session state
             rt_quote = st.session_state.get(f"rt_quote_{st.session_state.get('global_symbol', '')}")
             curr_price = rt_quote.price if rt_quote else df["Close"].iloc[-1]
-            atr_d = df["ATR_14"].iloc[-1] if "ATR_14" in df.columns else (curr_price * 0.02)
 
-            # 1. Macro Entry Calculation
+            # Volume-profile levels are context only. They no longer select
+            # intraday entries or resurrect distant historical order blocks.
             vp = VolumeProfile()
             vpa = vp.analyze(df)
             poc, vah, val = vpa.get("poc", curr_price), vpa.get("vah", curr_price*1.05), vpa.get("val", curr_price*0.95)
 
-            macro_entry = poc
-            if is_bullish:
-                bull_obs = [ob for ob in smc_state.get('bull_obs', []) if ob['top'] < curr_price]
-                macro_entry = max(bull_obs, key=lambda x: x['top'])['top'] if bull_obs else val
-            elif is_bearish:
-                bear_obs = [ob for ob in smc_state.get('bear_obs', []) if ob['bottom'] > curr_price]
-                macro_entry = min(bear_obs, key=lambda x: x['bottom'])['bottom'] if bear_obs else vah
-
-            # 2. Adaptive Logic: Switch to Intraday if Macro is too far (>5%)
-            dist_macro = abs(curr_price - macro_entry) / curr_price
-            use_intraday = (scalp_intel is not None) and (dist_macro > 0.05)
+            intel_available = bool(scalp_intel and scalp_intel.get("available"))
+            intel_actionable = bool(intel_available and scalp_intel.get("actionable"))
+            short_allowed = not _is_vn_tw_equity(symbol, market)
+            plan_is_bullish = bool(is_bullish and not is_weak and intel_actionable)
+            plan_is_bearish = bool(is_bearish and not is_weak and short_allowed and intel_actionable)
+            plan_is_defensive = bool(is_bearish and not short_allowed)
             
             # STRICT MTF: Explicitly show the transition
             duality_note = f"MTF SYNC: H4 ({'UP' if h4_is_bullish else 'DOWN' if h4_is_bearish else 'RANGE'}) ➔ H1 ({'UP' if 'BULLISH' in daily_bias else 'DOWN' if 'BEARISH' in daily_bias else 'NEUT'})"
             if is_weak: duality_note = "⚠ SYNC FAILURE: HTF/LTF Divergence"
             
-            entry_price = macro_entry
-            tp_price = 0.0
-            sl_price = 0.0
-            plan_type = "MACRO PLAN"
+            entry_price = None
+            tp_price = None
+            sl_price = None
+            plan_type = "WAIT / NO SYNC"
             ready_color = "#94a3b8"
             ready_status = "WAITING"
 
-            neutral_target = p63.get("predicted_price", curr_price)
-            if scalp_intel and scalp_intel.get("step2"):
-                neutral_target = scalp_intel["step2"]
-            short_allowed = not _is_vn_tw_equity(symbol, market)
-            target_side = _target_side(float(curr_price), float(neutral_target))
-            plan_is_bullish = is_bullish or (not is_bearish and target_side == "long")
-            raw_bearish_plan = is_bearish or (not is_bullish and target_side == "short")
-            plan_is_bearish = raw_bearish_plan and short_allowed
-            plan_is_defensive = raw_bearish_plan and not short_allowed
-
-            if use_intraday:
-                entry_price = curr_price if plan_is_defensive else scalp_intel["step1"]
-                tp_price = scalp_intel["step2"]
+            if plan_is_bullish or plan_is_bearish:
+                entry_price = scalp_intel.get("entry")
+                sl_price = scalp_intel.get("stop")
+                tp_price = scalp_intel.get("target")
                 plan_type = "INTRADAY PLAN"
-                
-                df_1h = scalp_intel.get("df_1h")
-                # FAULT TOLERANCE: Protect against NaN in rolling std
-                if df_1h is not None and len(df_1h) >= 14:
-                    atr_h = df_1h["Close"].rolling(14).std().iloc[-1]
-                    if np.isnan(atr_h): atr_h = atr_d * 0.15 # Fallback to 15% of daily vol
-                else:
-                    atr_h = atr_d * 0.15
-                
-                sl_price = entry_price - (atr_h * 2.0) if (plan_is_bullish or plan_is_defensive) else entry_price + (atr_h * 2.0)
-            else:
-                if plan_is_bullish:
-                    struct_low = macro_entry * 0.98
-                    bull_obs = [ob for ob in smc_state.get('bull_obs', []) if ob['top'] < curr_price]
-                    if bull_obs: struct_low = min(ob['bottom'] for ob in bull_obs)
-                    sl_price = struct_low - (atr_d * 0.5)
-                    tp_price = max(neutral_target, vah if vah > curr_price else (curr_price * 1.10))
-                elif plan_is_bearish:
-                    struct_high = macro_entry * 1.02
-                    bear_obs = [ob for ob in smc_state.get('bear_obs', []) if ob['bottom'] > curr_price]
-                    if bear_obs: struct_high = max(ob['top'] for ob in bear_obs)
-                    sl_price = struct_high + (atr_d * 0.5)
-                    tp_price = min(neutral_target, val if val < curr_price else (curr_price * 0.90))
-                else:
-                    entry_price = curr_price
-                    sl_price = curr_price - (atr_d * 1.5)
-                    tp_price = min(neutral_target, val if val < curr_price else (curr_price * 0.95))
+            elif not intel_available:
+                plan_type = "NO INTRADAY DATA"
+                ready_status = "DISABLED"
+                reason = scalp_intel.get("reason", "H1 unavailable") if scalp_intel else "H1 unavailable"
+                duality_note = f"H1 DISABLED: {reason}"
+            elif plan_is_defensive:
+                plan_type = "DEFENSIVE / NO LONG"
+                ready_status = "NO ENTRY"
 
             # Metrics
-            risk = abs(entry_price - sl_price)
-            reward = abs(tp_price - entry_price)
+            risk = abs(entry_price - sl_price) if entry_price is not None and sl_price is not None else 0.0
+            reward = abs(tp_price - entry_price) if entry_price is not None and tp_price is not None else 0.0
             rr_ratio = reward / risk if risk > 0 else 0
-            dist_to_entry = abs(curr_price - entry_price) / entry_price
+            dist_to_entry = abs(curr_price - entry_price) / entry_price if entry_price else float("inf")
             
             # 3-Level Status
-            ready_status = "READY" if dist_to_entry < 0.005 else "ALMOST" if dist_to_entry < 0.015 else "WAITING"
+            if entry_price:
+                ready_status = "READY" if dist_to_entry < 0.005 else "ALMOST" if dist_to_entry < 0.015 else "WAITING"
             
             # 4th Level: 🔥 TRIGGER / PYRAMID (Option B)
             conf = p1.get("confidence", 0)
             smc_score = abs(smc_state.get("smc_score", 0))
             is_trigger = (ready_status == "READY") and (conf > 0.7 or smc_score > 0.4)
-            is_pyramid = scalp_intel.get("pattern") in ["BULL FLAG", "BEAR PENNANT"] if scalp_intel else False
+            is_pyramid = bool(
+                entry_price
+                and scalp_intel
+                and scalp_intel.get("pattern") in ["BULL FLAG", "BEAR PENNANT"]
+            )
             
             if is_trigger:
                 ready_status = "🔥 TRIGGER"
@@ -987,7 +959,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             else:
                 ready_color = "#00E676" if ready_status == "READY" else "#f6ad55" if ready_status == "ALMOST" else "#94a3b8"
 
-            strat_desc = "Focusing on H1 Range" if use_intraday else f"Structure: {wyckoff_state.get('phase', 'Accumulation')}"
+            strat_desc = "Validated H1 execution" if entry_price else "No actionable intraday setup"
 
             # Pre-compute real-time change display
             live_indicator = "LIVE" if rt_quote and rt_quote.source != "historical_fallback" else "EOD"
@@ -1033,10 +1005,11 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             )
             
             # ➔ INSTITUTIONAL ROADMAP (Strategic Pathway)
-            s0 = scalp_intel.get("step0") if scalp_intel else None
+            s0 = scalp_intel.get("step0") if entry_price and scalp_intel else None
             # Core Alignment: Phase 1 is Step 1 (Entry/Structure), Phase 2 is Step 2 (Target/Trend)
-            s1 = scalp_intel["step1"] if scalp_intel else entry_price
-            s2 = scalp_intel["step2"] if scalp_intel else tp_price
+            s1 = scalp_intel.get("step1") if entry_price and scalp_intel else None
+            s2 = scalp_intel.get("step2") if entry_price and scalp_intel else None
+            break_even_trigger = scalp_intel.get("break_even_trigger") if entry_price and scalp_intel else None
             
             health = scalp_intel.get("health", "ACTIVE") if scalp_intel else "STABLE"
             health_color = "#00E676" if any(x in health for x in ["READY", "STRONG", "ACTIVE"]) else "#f6ad55"
@@ -1053,7 +1026,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             if s0:
                 ui_html += (
                     f'<div style="background:rgba(255,215,0,0.05); border:1px solid rgba(255,215,0,0.2); border-radius:8px; padding:10px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">'
-                    f'  <div style="color:#ffd700; font-size:0.65rem; font-weight:800; letter-spacing:1px;">⚡ PHASE 0: EARLY (SL to Entry @70%)</div>'
+                    f'  <div style="color:#ffd700; font-size:0.65rem; font-weight:800; letter-spacing:1px;">⚡ PHASE 0: H1 BREAKOUT</div>'
                     f'  <div style="font-size:1.1rem; font-weight:900; color:#fff; font-family:monospace;">{fmt(s0)}</div>'
                     f'</div>'
                 )
@@ -1071,9 +1044,16 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'</div>'
                 f'<div style="font-size:0.6rem; color:#94a3b8; margin: -5px 0 15px 0; display:flex; justify-content:space-between; opacity:0.8;">'
                 f'  <span>BIAS: <b style="color:#fff">{scalp_intel.get("bias", daily_bias) if scalp_intel else daily_bias}</b></span>'
-                f'  <span>CONFIDENCE: <b style="color:#00E676;">MASTER</b></span>'
+                f'  <span>STATUS: <b style="color:#00E676;">{"VALIDATED" if entry_price else "WAIT"}</b></span>'
                 f'</div>'
             )
+
+            if break_even_trigger:
+                ui_html += (
+                    f'<div style="font-size:0.65rem; color:#94a3b8; text-align:center; margin:-7px 0 12px;">'
+                    f'Break-even rule: move SL to entry only at 70% progress ({fmt(break_even_trigger)})'
+                    f'</div>'
+                )
 
             # SL/TP Execution Blocks (Safe Fallback)
             safe_scalp = scalp_intel if scalp_intel else {}
@@ -1106,12 +1086,6 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
         except Exception as e:
             logger.error(f"Execution engine error: {e}")
 
-
-def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dict):
-    """Render the detailed Professional Trade Plan dashboard (matching user request)."""
-    p1 = predictions.get(1, {})
-    daily_bias = p1.get("bias", "🟡 NEUTRAL")
-    lt_bias = predictions.get(63, {}).get("bias", "🟡 NEUTRAL")
 def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dict, scalp_intel: dict = None):
     """
     Render a high-fidelity trade plan dashboard.
@@ -1128,14 +1102,27 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
         p1 = predictions.get(1, {})
         # SYNC: If we have scalp_intel, use its bias to drive the Trade Plan (Unified Vision)
         effective_bias = scalp_intel.get("bias", p1.get("bias", "")) if scalp_intel else p1.get("bias", "")
-        p63 = predictions.get(63, {})
-        neutral_target = scalp_intel.get("step2") if scalp_intel and scalp_intel.get("step2") else p63.get("predicted_price", curr_price)
         short_allowed = not _is_vn_tw_equity(symbol, market)
         plan_side = _bias_side(effective_bias)
-        if plan_side == "neutral":
-            plan_side = _target_side(float(curr_price), float(neutral_target))
         if plan_side == "short" and not short_allowed:
             plan_side = "defensive"
+
+        health_text = str(scalp_intel.get("health", "")) if scalp_intel else ""
+        h1_bullish = any(tag in health_text for tag in ["STRONG BUY", "BULL FLAG", "BULLISH"])
+        h1_bearish = any(tag in health_text for tag in ["BEARISH SYNC", "BEAR PENNANT", "BEARISH"])
+        mtf_confirmed = (
+            (plan_side == "long" and h1_bullish)
+            or (plan_side == "short" and h1_bearish)
+        )
+        if not scalp_intel or not scalp_intel.get("available") or not scalp_intel.get("actionable") or not mtf_confirmed:
+            reason = scalp_intel.get("reason", "MTF confirmation required") if scalp_intel else "H1 data unavailable"
+            _render_html(
+                f'<div class="rhs-card" style="border-top:4px solid #f6ad55;padding:18px;">'
+                f'<div style="font-weight:800;color:#f6ad55;">WAIT / NO ACTIONABLE SETUP</div>'
+                f'<div style="font-size:0.75rem;color:#94a3b8;margin-top:8px;">{reason}. '
+                f'Entry, stop loss and take profit are intentionally disabled.</div></div>'
+            )
+            return
         
         is_bullish = plan_side == "long"
         is_bearish = plan_side == "short"
@@ -1152,12 +1139,11 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
         bear_obs = target_smc.get('bear_obs', [])
         relevant_zones = bull_obs if is_bullish else bear_obs if is_bearish else []
         
-        # Primary: SMC Order Blocks (Must be within 20% of curr_price to be valid)
+        # Primary: SMC Order Blocks (intraday zones must be within 3%).
         target_zone = None
         if relevant_zones:
             target_zone = min(relevant_zones, key=lambda x: abs(x['top'] - curr_price))
-            # Safety check: if the "closest" zone is more than 30% away, it's a 'Zombie' zone
-            if abs(target_zone['top'] - curr_price) / curr_price > 0.3:
+            if abs(target_zone['top'] - curr_price) / curr_price > 0.03:
                 target_zone = None
 
         if target_zone:
@@ -1170,26 +1156,32 @@ def _render_trade_plan_panel(df: pd.DataFrame, smc_state: dict, predictions: dic
             fvgs = target_smc.get('bull_fvgs' if is_bullish else 'bear_fvgs' if is_bearish else '', [])
             target_fvg = min(fvgs, key=lambda x: abs(x['top'] - curr_price)) if fvgs else None
             
-            if target_fvg and abs(target_fvg['top'] - curr_price) / curr_price < 0.2:
+            if target_fvg and abs(target_fvg['top'] - curr_price) / curr_price < 0.03:
                 range_text = f"{target_fvg['bottom']:,.2f} - {target_fvg['top']:,.2f}"
                 entry_price = (target_fvg['bottom'] + target_fvg['top']) / 2
                 sl_price = target_fvg['bottom'] - (atr_d * 0.2) if is_bullish else target_fvg['top'] + (atr_d * 0.2)
                 range_source = "FVG GAP"
             else:
-                # Fallback 2: Strategic Hub Phases (Best for BSR where 1H data is erratic)
+                # Validated H1 fallback; daily data is never substituted here.
                 s0 = scalp_intel.get("step0") if scalp_intel else None
                 entry_price = s0 if s0 and (is_bullish or is_bearish) else curr_price
                 sl_price = entry_price * (0.975 if (is_bullish or is_defensive or is_neutral) else 1.025)
                 range_text = f"AUTO: {entry_price:,.2f}"
                 range_source = "DEFENSIVE WATCH" if is_defensive else "PRECISION ENTRY"
 
+        # The shared validated plan is authoritative for all execution prices.
+        entry_price = float(scalp_intel["entry"])
+        sl_price = float(scalp_intel["stop"])
+        range_text = f"{entry_price:,.2f}"
+        range_source = "VALIDATED H1"
         risk = abs(entry_price - sl_price)
         if risk == 0: risk = curr_price * 0.015
         
         target_sign = 1 if (is_bullish or is_neutral) else -1
-        tp1 = entry_price + (target_sign * risk * 1.5)
-        tp2 = entry_price + (target_sign * risk * 2.5)
-        tp3 = entry_price + (target_sign * risk * 4.0)
+        validated_target = float(scalp_intel["target"])
+        tp1 = entry_price + (validated_target - entry_price) * 0.5
+        tp2 = validated_target
+        tp3 = validated_target
         target_label_prefix = "Downside" if is_defensive else "TP"
         target_color = "#f6ad55" if is_defensive else "#48bb78"
         rr_label = "Risk:Downside Ratio" if is_defensive else "Risk:Reward Ratio"
@@ -1923,30 +1915,44 @@ def _render_seasonality_panel(symbol: str, market: str):
 
 
 def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
-    """Calculate the Scalp Roadmap data without rendering UI (for merged plan)."""
+    """Build an H1-only roadmap without daily or 63-day target leakage."""
     try:
         p1 = predictions.get(1, {})
-        p63 = predictions.get(63, {})
         daily_bias = p1.get("bias", "🟡 NEUTRAL")
-        long_term_bullish = "BULLISH" in p63.get("bias", "")
         provider = registry.get(market)
-        if not provider: return None
-        
-        # Fetch last 7 days of 1H data
-        end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        
-        df_1h = provider.get_price_data(symbol, start, end, interval="1h")
-        
-        # ➔ CRITICAL FALLBACK for VN Stocks (BSR etc) that might lack 1H data
-        if df_1h is None or df_1h.empty:
-            logger.warning(f"1H data unavailable for {symbol}, falling back to daily for phases.")
-            # Fetch more daily data to simulate structure
-            start_daily = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            df_1h = provider.get_price_data(symbol, start_daily, end, interval="1d")
-            if df_1h.empty: return None
+        if not provider:
+            return {"available": False, "reason": "Market provider unavailable"}
 
-        df_4h = df_1h.iloc[::4].copy() if len(df_1h) > 4 else df_1h.copy()
+        # Fetch enough genuine H1 bars for ATR and structure calculations.
+        end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+
+        df_1h = provider.get_price_data(symbol, start, end, interval="1h")
+        valid_h1, invalid_reason = validate_intraday_bars(df_1h)
+        if not valid_h1:
+            logger.warning(f"Intraday roadmap disabled for {symbol}: {invalid_reason}")
+            return {
+                "available": False,
+                "actionable": False,
+                "reason": invalid_reason,
+                "timeframe": "NONE",
+                "bias": daily_bias,
+                "health": "NO H1 DATA",
+                "pattern": "None",
+            }
+        df_4h = (
+            df_1h.set_index("Date")
+            .resample("4h")
+            .agg({
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            })
+            .dropna()
+            .reset_index()
+        )
         predictor = AIPredictor()
         scalp = predictor.analyze_multi_tf(df_1h, df_4h)
         pattern = scalp.get("pattern", "None")
@@ -1956,54 +1962,35 @@ def _calculate_intraday_intel(symbol: str, market: str, predictions: dict):
         smc_h = SmcAnalyzer(SmcConfig())
         s_h = smc_h.get_current_state(df_1h)
         
-        curr_price = df_1h["Close"].iloc[-1]
-        # ADVANCED CONSENSUS: Use long-term trend to override neutral daily bias
-        lt_ret = float(p63.get("predicted_return", 0.0))
-        is_bullish = ("BULLISH" in daily_bias) or ((long_term_bullish or lt_ret > 1.0) and "BEARISH" not in daily_bias)
-        is_bearish = ("BEARISH" in daily_bias) or ((lt_ret < -1.0) and "BULLISH" not in daily_bias)
-        
-        # Phase 1 & 2 (Structure & Goal)
-        if is_bullish:
-            # Force Buy Steps: Step 1 is Structural Entry, Step 2 is AI Price Target
-            bull_obs = s_h.get("bull_obs", [])
-            step1_price = bull_obs[0]["top"] if bull_obs else (curr_price * 0.99)
-            bull_target = p63.get("predicted_price", curr_price * 1.10)
-            step2_price = bull_target if bull_target > curr_price else (curr_price * 1.10)
-        elif is_bearish:
-            # Short Alignment
-            bear_obs = s_h.get("bear_obs", [])
-            step1_price = bear_obs[0]["bottom"] if bear_obs else (curr_price * 1.01)
-            bear_target = p63.get("predicted_price", curr_price * 0.90)
-            step2_price = bear_target if bear_target < curr_price else (curr_price * 0.90)
-        else:
-            # Neutral means no directional setup, not an implicit short.
-            step1_price = curr_price
-            step2_price = p63.get("predicted_price", curr_price)
-
-        # ➔ NEW: Phase 0 (Immediate Entry) for Daily Trade
-        # We look for a breakout of the last 4 hours to catch the move towards Step 1/2 immediately
-        step0_price = None
-        if is_bullish:
-            # Entry on break of recent 4H High
-            step0_price = df_1h["High"].rolling(4).max().iloc[-1]
-            if step0_price < curr_price: step0_price = curr_price # Already breaking out
-        elif is_bearish:
-            # Entry on break of recent 4H Low
-            step0_price = df_1h["Low"].rolling(4).min().iloc[-1]
-            if step0_price > curr_price: step0_price = curr_price # Already breaking down
-
+        side = "long" if "BULLISH" in daily_bias else "short" if "BEARISH" in daily_bias else "neutral"
+        plan = build_intraday_plan(
+            df_1h,
+            side=side,
+            bull_obs=s_h.get("bull_obs", []),
+            bear_obs=s_h.get("bear_obs", []),
+        )
         return {
-            "step0": step0_price,
-            "step1": step1_price,
-            "step2": step2_price,
-            "bias": scalp["bias"],
+            **plan,
+            "available": True,
+            "timeframe": "1H",
+            "step0": plan.get("phase0"),
+            "step1": plan.get("entry"),
+            "step2": plan.get("target"),
+            "bias": daily_bias,
             "health": scalp["health"],
             "pattern": pattern,
-            "df_1h": df_1h
+            "df_1h": df_1h,
+            "smc_state": s_h,
         }
+        
     except Exception as e:
         logger.debug(f"Intel calculation error: {e}")
-        return None
+        return {
+            "available": False,
+            "actionable": False,
+            "reason": str(e),
+            "timeframe": "NONE",
+        }
 
 
 def _render_intel_card(symbol: str, p: dict):
@@ -2534,6 +2521,8 @@ def render():
                         _col_map.update({"Adj close": "Close", "Adj Close": "Close",
                                          "date": "Date", "Date": "Date"})
                         _df_daily = _df_daily.rename(columns=_col_map)
+                        if market == "VN":
+                            _df_daily = normalize_vn_ohlcv(_df_daily, symbol=symbol)
                         _date_col = "Date" if "Date" in _df_daily.columns else _df_daily.columns[0]
                         _df_daily[_date_col] = pd.to_datetime(_df_daily[_date_col])
                         _df_daily = _df_daily.set_index(_date_col).sort_index()
@@ -2775,6 +2764,8 @@ def render():
                     _pq = Path(__file__).resolve().parents[1] / ".cache" / "prices" / f"{_pq_sym}_{market}.parquet"
                     if _pq.exists():
                         _df_pq = pd.read_parquet(_pq, engine="pyarrow")
+                        if market == "VN":
+                            _df_pq = normalize_vn_ohlcv(_df_pq, symbol=symbol)
                         _df_pq["Date"] = pd.to_datetime(_df_pq["Date"]).dt.tz_localize(None)
                         if "Foreign_Buy" in _df_pq.columns and "Foreign_Sell" in _df_pq.columns:
                             _df_for_flow = _df_pq
