@@ -26,7 +26,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from loguru import logger
-from src.vn_price import normalize_vn_ohlcv
+from src.vn_price import canonicalize_vn_daily_bars, normalize_vn_ohlcv
 
 
 _SCALE_JUMP_THRESHOLD = 2.0   # log-return magnitude signaling a unit change
@@ -224,18 +224,22 @@ class CacheManager:
         if df.empty:
             return
         if str(market).upper() == "VN":
-            df = normalize_vn_ohlcv(df, symbol=self._clean_symbol(symbol))
+            df = canonicalize_vn_daily_bars(df, symbol=self._clean_symbol(symbol))
 
         # Merge with existing cache (append new data)
         existing = self.get_cached_price_data(symbol, market, max_age_hours=999999)
         if existing is not None and not existing.empty:
-            # Combine and deduplicate by Date
+            # Combine and deduplicate by canonical market session.
             combined = pd.concat([existing, df], ignore_index=True)
             if "Date" in combined.columns:
                 combined["Date"] = pd.to_datetime(combined["Date"])
                 combined = combined.drop_duplicates(subset=["Date"], keep="last")
                 combined = combined.sort_values("Date").reset_index(drop=True)
             df = combined
+
+        if str(market).upper() == "VN":
+            # Re-run after merging to clean legacy 00:00/07:00 duplicates.
+            df = canonicalize_vn_daily_bars(df, symbol=self._clean_symbol(symbol))
 
         # Always sanitize before writing to prevent scale-corrupt data persisting
         df = _sanitize_price_scale(df, label=f"{symbol}_{market}_write")
@@ -290,7 +294,7 @@ class CacheManager:
             df = pd.read_parquet(path, engine="pyarrow")
 
             if str(market).upper() == "VN":
-                df = normalize_vn_ohlcv(df, symbol=self._clean_symbol(symbol))
+                df = canonicalize_vn_daily_bars(df, symbol=self._clean_symbol(symbol))
 
             # Sanitize scale discontinuities on every read (self-healing)
             df = _sanitize_price_scale(df, label=f"{symbol}_{market}_read")
@@ -313,6 +317,9 @@ class CacheManager:
     
     def cache_fundamentals(self, symbol: str, market: str, data: dict) -> None:
         """Cache fundamental data for a symbol as JSON."""
+        if not data or not any(v is not None for v in data.values()):
+            logger.warning(f"Skip empty fundamentals cache for {symbol} ({market})")
+            return
         fundamentals_dir = self.cache_dir / "fundamentals"
         fundamentals_dir.mkdir(parents=True, exist_ok=True)
         clean_symbol = self._clean_symbol(symbol)

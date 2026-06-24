@@ -89,7 +89,7 @@ def _previous_weekday(day):
 
 def _expected_session_date(market: str) -> pd.Timestamp:
     tz_name = "Asia/Ho_Chi_Minh" if market == "VN" else "Asia/Taipei"
-    today = datetime.now(ZoneInfo(tz_name)).date()
+    today = _market_now(market).date()
     return pd.Timestamp(_previous_weekday(today))
 
 

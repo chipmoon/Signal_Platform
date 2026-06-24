@@ -34,7 +34,8 @@ from src.strategies.live_geo_osint import LiveGeoOsintEngine
 from src.risk_manager import calculate_var
 from src.llm_advisor import advisor
 from src.analytics.intraday_plan import build_intraday_plan, validate_intraday_bars
-from src.vn_price import normalize_vn_ohlcv
+from src.analytics.smc_radar import build_execution_gate, build_smc_entry_candidates
+from src.vn_price import canonicalize_vn_daily_bars, normalize_vn_ohlcv
 # ── Phase 1-4: Advanced Analysis Modules ──────────────────────────────────────
 try:
     from src.analytics.mtf_confluence import compute_mtf_confluence
@@ -200,6 +201,9 @@ def _fetch_price_data(symbol: str, market: str, days: int = 500) -> pd.DataFrame
         
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+
+    if str(market).upper() in {"VN", "VIETNAM", "VN_STOCK"}:
+        df = canonicalize_vn_daily_bars(df, symbol=symbol)
         
     return df
 
@@ -857,7 +861,7 @@ def _render_wyckoff_panel(df: pd.DataFrame):
             return {}
 
 
-def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict, predictions: dict, scalp_intel: dict = None, symbol: str = "", market: str = ""):
+def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict, predictions: dict, scalp_intel: dict = None, symbol: str = "", market: str = "", decision_price: float | None = None):
     """Render the Unified Professional Execution Panel (Strategic Hub Roadmap)."""
     p1 = predictions.get(1, {})
     daily_bias = p1.get("bias", "🟡 NEUTRAL")
@@ -890,7 +894,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
         try:
             # Use real-time price if available in session state
             rt_quote = st.session_state.get(f"rt_quote_{st.session_state.get('global_symbol', '')}")
-            curr_price = rt_quote.price if rt_quote else df["Close"].iloc[-1]
+            curr_price = float(decision_price) if decision_price is not None else (rt_quote.price if rt_quote else df["Close"].iloc[-1])
 
             # Volume-profile levels are context only. They no longer select
             # intraday entries or resurrect distant historical order blocks.
@@ -934,6 +938,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
             risk = abs(entry_price - sl_price) if entry_price is not None and sl_price is not None else 0.0
             reward = abs(tp_price - entry_price) if entry_price is not None and tp_price is not None else 0.0
             rr_ratio = reward / risk if risk > 0 else 0
+            rr_display = f"1 : {rr_ratio:.1f}" if risk > 0 and reward > 0 else "N/A"
             dist_to_entry = abs(curr_price - entry_price) / entry_price if entry_price else float("inf")
             
             # 3-Level Status
@@ -998,7 +1003,7 @@ def _render_execution_panel(df: pd.DataFrame, smc_state: dict, wyckoff_state: di
                 f'  </div>'
                 f'  <div style="border-top:1px dashed rgba(255,255,255,0.1); padding-top:12px;">'
                 f'    <div style="font-size:0.65rem; color:#f6ad55; text-transform:uppercase; letter-spacing:1px; font-weight:700;">{rr_label}</div>'
-                f'    <div style="font-size:1.4rem; font-weight:900; color:#f6ad55;">1 : {rr_ratio:.1f}</div>'
+                f'    <div style="font-size:1.4rem; font-weight:900; color:#f6ad55;">{rr_display}</div>'
                 f'  </div>'
                 f'</div>'
                 f'</div>'
@@ -1440,136 +1445,18 @@ def _build_smc_entry_candidates(
     smc_state: dict,
     wyckoff_state: dict,
     predictions: dict | None = None,
+    *,
+    decision_price: float | None = None,
+    execution_gate: dict | None = None,
 ) -> list[dict]:
-    """Build actionable long-entry candidates from current SMC FVG/OB zones."""
-    if df.empty:
-        return []
-
-    curr_price = float(smc_state.get("current_price", df["Close"].iloc[-1]))
-    if curr_price <= 0:
-        return []
-
-    stoch = smc_state.get("stoch", {})
-    stoch_k = float(stoch.get("k", 50.0))
-    stoch_status = str(stoch.get("status", "NEUTRAL")).upper()
-    q_target = None
-    if predictions and 63 in predictions:
-        q_target = float(predictions[63].get("predicted_price", 0.0) or 0.0)
-
-    zones: list[dict] = []
-    for f in smc_state.get("bull_fvgs", []):
-        zones.append({
-            "type": "FVG",
-            "top": float(f["top"]),
-            "bottom": float(f["bottom"]),
-            "filled_pct": float(f.get("filled_pct", 0.0)),
-        })
-    for ob in smc_state.get("bull_obs", []):
-        zones.append({
-            "type": "OB",
-            "top": float(ob["top"]),
-            "bottom": float(ob["bottom"]),
-            "strength": float(ob.get("strength", 0.0)),
-        })
-
-    if not zones:
-        return []
-
-    recent = df.tail(120)
-    swing_high = float(recent["High"].max())
-    swing_low = float(recent["Low"].min())
-    swing_diff = max(swing_high - swing_low, 0.0)
-    fib_levels = [
-        swing_high - 0.382 * swing_diff,
-        swing_high - 0.500 * swing_diff,
-        swing_high - 0.618 * swing_diff,
-    ] if swing_diff > 0 else []
-
-    try:
-        vp = VolumeProfile()
-        vpa = vp.analyze(df)
-        vp_levels = [float(v) for v in [vpa.get("poc", 0), vpa.get("vah", 0), vpa.get("val", 0)] if float(v or 0) > 0]
-    except Exception:
-        vp_levels = []
-
-    phase = str(wyckoff_state.get("phase", "")).upper()
-    wyckoff_ok = any(x in phase for x in ["PHASE B", "PHASE C", "PHASE D", "ACCUMULATION", "MARKUP"])
-    qmf_ok = int(smc_state.get("signal", 0)) >= 0
-    candidates: list[dict] = []
-
-    for z in zones:
-        if z["top"] <= 0 or z["bottom"] <= 0 or z["top"] <= z["bottom"]:
-            continue
-
-        mid = (z["top"] + z["bottom"]) / 2.0
-        width = z["top"] - z["bottom"]
-        dist_to_zone = 0.0
-        if curr_price > z["top"]:
-            dist_to_zone = (curr_price - z["top"]) / curr_price
-        elif curr_price < z["bottom"]:
-            dist_to_zone = (z["bottom"] - curr_price) / curr_price
-        inside = z["bottom"] <= curr_price <= z["top"]
-        if abs(mid - curr_price) / curr_price > 0.18:
-            continue
-
-        score = 1
-        factors = [z["type"]]
-        if stoch_status != "OVERBOUGHT":
-            score += 1
-            factors.append("STOCH_OK")
-        if stoch_k <= 35:
-            score += 1
-            factors.append("OVERSOLD")
-        if any(z["bottom"] - width <= lvl <= z["top"] + width for lvl in vp_levels):
-            score += 1
-            factors.append("VOL_PROFILE")
-        if any(z["bottom"] - width <= lvl <= z["top"] + width for lvl in fib_levels):
-            score += 1
-            factors.append("FIB")
-        if wyckoff_ok:
-            score += 1
-            factors.append("WYCKOFF")
-        if smc_state.get("sweep_bull") or smc_state.get("idm_bull"):
-            score += 1
-            factors.append("LIQ_SWEEP")
-        if qmf_ok:
-            score += 1
-            factors.append("SMC_SIGNAL")
-
-        entry_low = z["bottom"]
-        entry_high = z["top"]
-        stop = max(0.01, entry_low - max(width * 0.35, curr_price * 0.015))
-        risk = max(entry_high - stop, curr_price * 0.01)
-        target = max(entry_high + risk * 2.0, q_target or 0.0, curr_price * 1.05)
-        rr = (target - entry_high) / risk if risk > 0 else 0.0
-
-        if inside and score >= 5:
-            status = "READY"
-        elif dist_to_zone <= 0.02 and score >= 4:
-            status = "NEAR"
-        elif score >= 4:
-            status = "WATCH"
-        else:
-            status = "WAIT"
-
-        candidates.append({
-            "status": status,
-            "type": z["type"],
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-            "stop": stop,
-            "target": target,
-            "rr": rr,
-            "score": min(score, 8),
-            "distance_pct": dist_to_zone * 100.0,
-            "inside": inside,
-            "factors": factors,
-        })
-
-    rank = {"READY": 0, "NEAR": 1, "WATCH": 2, "WAIT": 3}
-    candidates.sort(key=lambda c: (rank.get(c["status"], 9), -c["score"], c["distance_pct"]))
-    return candidates
-
+    """Compatibility wrapper around the pure, testable Radar engine."""
+    return build_smc_entry_candidates(
+        df,
+        smc_state,
+        wyckoff_state,
+        decision_price=decision_price,
+        execution_gate=execution_gate,
+    )
 
 def _render_smc_entry_radar(
     symbol: str,
@@ -1578,66 +1465,74 @@ def _render_smc_entry_radar(
     smc_state: dict,
     wyckoff_state: dict,
     predictions: dict,
+    *,
+    decision_price: float,
+    execution_gate: dict,
 ) -> None:
-    """Render a daily-updated SMC entry table and alert surface."""
-    candidates = _build_smc_entry_candidates(df, smc_state, wyckoff_state, predictions)
-    actionables = [c for c in candidates if c["status"] in {"READY", "NEAR"}]
+    """Render zone awareness separately from confirmed execution signals."""
+    candidates = _build_smc_entry_candidates(
+        df, smc_state, wyckoff_state, predictions,
+        decision_price=decision_price, execution_gate=execution_gate,
+    )
+    triggers = [candidate for candidate in candidates if candidate["status"] == "BUY_TRIGGERED"]
     top = candidates[0] if candidates else None
 
-    st.markdown("### SMC Entry Radar")
+    st.markdown("### SMC Daily Entry Radar")
     if not top:
-        st.info("No active bullish SMC entry zone near current price.")
+        st.info("No fresh tactical bullish SMC zone near the decision price.")
         return
 
-    if top["status"] == "READY":
-        st.success(
-            f"SMC READY: {symbol} is inside a high-confluence {top['type']} entry zone "
-            f"({_format_price(top['entry_low'], symbol, market)} - {_format_price(top['entry_high'], symbol, market)})."
-        )
-    elif top["status"] == "NEAR":
-        st.warning(
-            f"SMC NEAR: {symbol} is {top['distance_pct']:.1f}% from a {top['type']} entry zone. Wait for touch/confirmation."
-        )
+    zone_text = (
+        f"{_format_price(top['entry_low'], symbol, market)} - "
+        f"{_format_price(top['entry_high'], symbol, market)}"
+    )
+    if top["status"] == "BUY_TRIGGERED":
+        st.success(f"BUY TRIGGERED: {symbol} confirmed MTF/H1 inside {top['type']} zone ({zone_text}).")
+    elif top["status"] == "SETUP_READY":
+        st.warning(f"SETUP READY: {symbol} is aligned; wait for the final bullish trigger in {zone_text}.")
+    elif top["status"] == "ZONE_TOUCH":
+        st.info(f"ZONE TOUCH: {symbol} reached {top['type']} {zone_text}, but MTF/H1 has not confirmed BUY.")
+    elif top["status"] == "NEAR_ZONE":
+        st.info(f"NEAR ZONE: {symbol} is {top['distance_pct']:.1f}% from {top['type']} {zone_text}.")
     else:
-        st.info("SMC zones exist, but no immediate entry trigger yet.")
+        st.info("Fresh SMC zones exist, but there is no immediate execution setup.")
 
     rows = []
-    for c in candidates[:8]:
+    for candidate in candidates[:8]:
         rows.append({
-            "Status": c["status"],
-            "Zone Type": c["type"],
-            "Entry Zone": f"{c['entry_low']:,.2f} - {c['entry_high']:,.2f}",
-            "Stop": f"{c['stop']:,.2f}",
-            "Target": f"{c['target']:,.2f}",
-            "R:R": round(c["rr"], 2),
-            "Score": f"{c['score']}/8",
-            "Distance": f"{c['distance_pct']:.1f}%",
-            "Factors": ", ".join(c["factors"]),
+            "Status": candidate["status"],
+            "TF": candidate["timeframe"],
+            "Zone Type": candidate["type"],
+            "Entry Zone": f"{candidate['entry_low']:,.2f} - {candidate['entry_high']:,.2f}",
+            "Stop": f"{candidate['stop']:,.2f}",
+            "Target": f"{candidate['target']:,.2f}",
+            "R:R": round(candidate["rr"], 2),
+            "Score": f"{candidate['score']}/8",
+            "Distance": f"{candidate['distance_pct']:.1f}%",
+            "Age": f"{candidate['age_bars']} bars",
+            "Filled": f"{candidate['filled_pct']:.0%}",
+            "Factors": ", ".join(candidate["factors"]),
         })
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    if actionables:
-        alert = actionables[0]
+    if triggers:
+        alert = triggers[0]
         alert_text = (
-            f"SMC {alert['status']} | {symbol} {market} | "
+            f"SMC BUY_TRIGGERED | {symbol} {market} | Decision {decision_price:,.2f} | "
             f"Entry {alert['entry_low']:,.2f}-{alert['entry_high']:,.2f} | "
             f"SL {alert['stop']:,.2f} | TP {alert['target']:,.2f} | "
             f"Score {alert['score']}/8 | RR {alert['rr']:.2f}"
         )
         st.caption(alert_text)
-        if st.button("Send SMC Telegram Alert", key=f"smc_alert_{symbol}_{market}"):
+        if st.button("Send Confirmed SMC Telegram Alert", key=f"smc_alert_{symbol}_{market}"):
             try:
                 from src.alerts.telegram import TelegramAlertSender
                 sent = TelegramAlertSender(channel="smc").send_signal_alert(
-                    ticker=symbol,
-                    signal=1,
-                    price=float(smc_state.get("current_price", df["Close"].iloc[-1])),
-                    reason=alert_text,
+                    ticker=symbol, signal=1, price=float(decision_price), reason=alert_text,
                 )
                 st.success("Telegram alert sent.") if sent else st.warning("Telegram is not configured or send failed.")
             except Exception as exc:
                 st.error(f"Telegram alert failed: {exc}")
-
 
 def _render_smart_entry_scanner(df: pd.DataFrame, smc_state: dict, wyckoff_state: dict):
     """Unified Smart Entry Scanner with 5-factor Confluence Scoring.
@@ -2451,8 +2346,9 @@ def render():
             return
             
         ref_dt = pd.to_datetime(ref_date)
-        df_train = df_full[df_full["Date"] <= ref_dt].copy()
-        df_outcome = df_full[df_full["Date"] > ref_dt].copy()
+        next_session_day = ref_dt + pd.Timedelta(days=1)
+        df_train = df_full[df_full["Date"] < next_session_day].copy()
+        df_outcome = df_full[df_full["Date"] >= next_session_day].copy()
 
     if len(df_train) < 100:
         st.warning("Insufficient history before reference date.")
@@ -2658,6 +2554,9 @@ def render():
         source_label = "Historical Close"
         ts_display = "N/A"
         volume_display = "N/A"
+
+    decision_price = float(live_price)
+    execution_gate = build_execution_gate(predictions, scalp_intel, smc_state)
 
     # ── Live Price Banner ──
     if rt_quote:
@@ -3270,7 +3169,10 @@ def render():
         _render_trade_plan_panel(df_train, smc_state, predictions, scalp_intel)
 
         # Daily actionable SMC entry table + alert surface
-        _render_smc_entry_radar(symbol, market, df_train, smc_state, wyckoff_state, predictions)
+        _render_smc_entry_radar(
+            symbol, market, df_train, smc_state, wyckoff_state, predictions,
+            decision_price=decision_price, execution_gate=execution_gate,
+        )
 
         # UPGRADED: Smart Entry Scanner (replaces Liquidity Black Holes + Entry Table)
         _render_smart_entry_scanner(df_train, smc_state, wyckoff_state)
@@ -3294,7 +3196,10 @@ def render():
         _render_intel_card(symbol, predictions[1])
         
         # RESTORED: Execution Plan (Phases 0, 1, 2)
-        _render_execution_panel(df_train, smc_state, wyckoff_state, predictions, scalp_intel, symbol, market)
+        _render_execution_panel(
+            df_train, smc_state, wyckoff_state, predictions, scalp_intel,
+            symbol, market, decision_price=decision_price,
+        )
         
         # 2. Context Panels
         _render_html("<br>")

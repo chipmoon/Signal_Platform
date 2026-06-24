@@ -248,13 +248,10 @@ def detect_fair_value_gaps(
             gap_size_pct = (gap_top - gap_bottom) / close[i]
             if gap_size_pct < cfg.fvg_min_size_pct:
                 continue
-            # Check fill: subsequent candles entering the gap
-            filled = 0.0
-            for k in range(i + 1, len(df)):
-                if low[k] <= gap_top:
-                    entry = min(low[k], gap_top)
-                    filled = 1.0 - max(0.0, (entry - gap_bottom) / (gap_top - gap_bottom))
-                    break
+            # Track the deepest later mitigation, not only the first touch.
+            subsequent_lows = low[i + 1:]
+            deepest_low = float(np.min(subsequent_lows)) if len(subsequent_lows) else gap_top
+            filled = np.clip((gap_top - deepest_low) / (gap_top - gap_bottom), 0.0, 1.0)
             bull_fvgs.append(FairValueGap(
                 direction="Bullish",
                 top=float(gap_top),
@@ -271,12 +268,9 @@ def detect_fair_value_gaps(
             gap_size_pct = (gap_top - gap_bottom) / close[i]
             if gap_size_pct < cfg.fvg_min_size_pct:
                 continue
-            filled = 0.0
-            for k in range(i + 1, len(df)):
-                if high[k] >= gap_bottom:
-                    entry = max(high[k], gap_bottom)
-                    filled = 1.0 - max(0.0, (gap_top - entry) / (gap_top - gap_bottom))
-                    break
+            subsequent_highs = high[i + 1:]
+            highest_high = float(np.max(subsequent_highs)) if len(subsequent_highs) else gap_bottom
+            filled = np.clip((highest_high - gap_bottom) / (gap_top - gap_bottom), 0.0, 1.0)
             bear_fvgs.append(FairValueGap(
                 direction="Bearish",
                 top=float(gap_top),
@@ -1057,10 +1051,10 @@ class SmcAnalyzer:
             "near_buy_liq_price": round(getattr(self, "_near_buy_lvl", 0.0), 2),
             "near_sell_liq_price": round(getattr(self, "_near_sell_lvl", 0.0), 2),
             # Zone lists for chart overlay
-            "bull_obs": [{"top": ob.top, "bottom": ob.bottom, "strength": ob.strength} for ob in self._bull_obs],
-            "bear_obs": [{"top": ob.top, "bottom": ob.bottom, "strength": ob.strength} for ob in self._bear_obs],
-            "bull_fvgs": [{"top": f.top, "bottom": f.bottom, "filled_pct": f.filled_pct} for f in self._bull_fvgs],
-            "bear_fvgs": [{"top": f.top, "bottom": f.bottom, "filled_pct": f.filled_pct} for f in self._bear_fvgs],
+            "bull_obs": [{"top": ob.top, "bottom": ob.bottom, "strength": ob.strength, "candle_idx": ob.candle_idx, "formed_at": ob.date} for ob in self._bull_obs],
+            "bear_obs": [{"top": ob.top, "bottom": ob.bottom, "strength": ob.strength, "candle_idx": ob.candle_idx, "formed_at": ob.date} for ob in self._bear_obs],
+            "bull_fvgs": [{"top": f.top, "bottom": f.bottom, "filled_pct": f.filled_pct, "candle_idx": f.candle_idx, "formed_at": f.date} for f in self._bull_fvgs],
+            "bear_fvgs": [{"top": f.top, "bottom": f.bottom, "filled_pct": f.filled_pct, "candle_idx": f.candle_idx, "formed_at": f.date} for f in self._bear_fvgs],
             "buy_liq": [{"level": p.level, "touches": p.touches} for p in self._buy_liq],
             "sell_liq": [{"level": p.level, "touches": p.touches} for p in self._sell_liq],
             "current_price": round(float(close), 4),

@@ -57,6 +57,66 @@ def normalize_vn_ohlcv(
     return result
 
 
+def canonicalize_vn_daily_bars(
+    df: pd.DataFrame,
+    *,
+    symbol: str = "",
+    drop_zero_volume: bool = True,
+) -> pd.DataFrame:
+    """Return one canonical, traded bar per Vietnam market session.
+
+    Duplicate 00:00/07:00 bars and flat holiday placeholders distort
+    rolling indicators and can manufacture artificial FVGs.
+    """
+    if df is None or df.empty:
+        return df
+
+    result = normalize_vn_ohlcv(df, symbol=symbol)
+    if "Date" not in result.columns:
+        return result
+
+    result = result.copy()
+    dates = pd.to_datetime(result["Date"], errors="coerce")
+    try:
+        dates = dates.dt.tz_localize(None)
+    except (TypeError, AttributeError):
+        pass
+    result["Date"] = dates
+    result = result[result["Date"].notna()].copy()
+    if result.empty:
+        return result
+
+    result["_session_date"] = result["Date"].dt.normalize()
+    result["_source_order"] = np.arange(len(result))
+    if "Volume" in result.columns:
+        volume = pd.to_numeric(result["Volume"], errors="coerce")
+        result["Volume"] = volume
+        result["_traded"] = (volume > 0).astype(int)
+    else:
+        result["_traded"] = 0
+
+    quality_columns = [
+        column
+        for column in ("Open", "High", "Low", "Close", "Volume", "VNI")
+        if column in result.columns
+    ]
+    result["_quality"] = result[quality_columns].notna().sum(axis=1) if quality_columns else 0
+    result = result.sort_values(
+        ["_session_date", "_traded", "_quality", "_source_order"],
+        kind="stable",
+    ).drop_duplicates(subset=["_session_date"], keep="last")
+
+    if drop_zero_volume and "Volume" in result.columns:
+        result = result[result["Volume"] > 0].copy()
+
+    result["Date"] = result["_session_date"]
+    return (
+        result.drop(columns=["_session_date", "_source_order", "_traded", "_quality"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+
 def vn_price_scale_is_consistent(df: pd.DataFrame) -> bool:
     """Return False when adjacent closes contain a likely 1,000x unit jump."""
     if df is None or df.empty or "Close" not in df.columns:

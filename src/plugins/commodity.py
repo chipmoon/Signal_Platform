@@ -11,11 +11,20 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 try:
     import yfinance as yf
+    import yfinance.cache as yf_cache
+    _YF_CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "yfinance"
+    _YF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        yf_cache.set_cache_location(str(_YF_CACHE_DIR))
+        yf.set_tz_cache_location(str(_YF_CACHE_DIR))
+    except Exception:
+        pass
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
@@ -161,6 +170,12 @@ class CommodityProvider(AssetProvider):
             raise ImportError("yfinance not installed. Please run: pip install yfinance")
             
         try:
+            try:
+                _YF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                yf_cache.set_cache_location(str(_YF_CACHE_DIR))
+                yf.set_tz_cache_location(str(_YF_CACHE_DIR))
+            except Exception:
+                pass
             logger.info(f"Fetching {yahoo_symbol} data from {start} to {end}")
             with _temporary_disable_broken_loopback_proxy():
                 ticker = yf.Ticker(yahoo_symbol)

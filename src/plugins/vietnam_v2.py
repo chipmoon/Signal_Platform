@@ -28,7 +28,7 @@ from loguru import logger
 
 from .base import AssetInfo, AssetProvider
 from ..cache_manager import cache
-from src.vn_price import normalize_vn_ohlcv, normalize_vn_price_value
+from src.vn_price import canonicalize_vn_daily_bars, normalize_vn_ohlcv, normalize_vn_price_value
 
 PROXY_ENV_KEYS = [
     "HTTP_PROXY",
@@ -378,6 +378,12 @@ class VietnamStockProviderV2(AssetProvider):
             else interval
         )
 
+        def _normalize_result(frame: pd.DataFrame) -> pd.DataFrame:
+            normalized = normalize_vn_ohlcv(frame, symbol=base_symbol)
+            if interval_l == '1d':
+                return canonicalize_vn_daily_bars(normalized, symbol=base_symbol)
+            return normalized
+
         # Try daily cache first; the legacy cache key has no interval.
         cached = None if interval_l != '1d' else cache.get_cached_price_data(
             base_symbol, "VN", max_age_hours=24, start=start, end=end
@@ -385,7 +391,7 @@ class VietnamStockProviderV2(AssetProvider):
         if cached is not None and not cached.empty and "VNI" in cached.columns:
             if self._cache_has_latest_daily(cached, end):
                 logger.info(f"Using cached enriched data for {base_symbol}")
-                return normalize_vn_ohlcv(cached, symbol=base_symbol)
+                return _normalize_result(cached)
             logger.info(f"Cached data for {base_symbol} is missing latest VN session; refreshing from provider")
 
         # Try primary fetch (vnstock)
@@ -401,7 +407,7 @@ class VietnamStockProviderV2(AssetProvider):
                 df = self._fetch_from_vnstock(base_symbol, start, end, fetch_interval)
                 
                 if df is not None and not df.empty:
-                    df = normalize_vn_ohlcv(df, symbol=base_symbol)
+                    df = _normalize_result(df)
                     if resample_4h:
                         logger.info(f"Resampling 1H to 4H for {base_symbol}")
                         df = df.set_index('Date').resample('4H').agg({
@@ -449,7 +455,7 @@ class VietnamStockProviderV2(AssetProvider):
             try:
                 df = self._fetch_from_tradingview(base_symbol, start, end, interval=interval_l)
                 if df is not None and not df.empty:
-                    return normalize_vn_ohlcv(df, symbol=base_symbol)
+                    return _normalize_result(df)
             except Exception as e:
                 logger.warning(f"TvDatafeed fallback failed for {base_symbol}: {_safe_err(e)}")
 
@@ -458,7 +464,7 @@ class VietnamStockProviderV2(AssetProvider):
             try:
                 df = self._fetch_from_yfinance(base_symbol, start, end, interval_l)
                 if df is not None and not df.empty:
-                    return normalize_vn_ohlcv(df, symbol=base_symbol)
+                    return _normalize_result(df)
             except Exception as e:
                 logger.warning(f"yfinance intraday fallback failed for {base_symbol}: {_safe_err(e)}")
 
@@ -471,7 +477,7 @@ class VietnamStockProviderV2(AssetProvider):
         try:
             df = self._fetch_from_yfinance(base_symbol, start, end, interval)
             if df is not None and not df.empty:
-                df = normalize_vn_ohlcv(df, symbol=base_symbol)
+                df = _normalize_result(df)
                 cache.cache_price_data(base_symbol, "VN", df)  # warm cache
                 return df
         except Exception as e:
@@ -483,7 +489,7 @@ class VietnamStockProviderV2(AssetProvider):
         )
         if stale_cache is not None and not stale_cache.empty:
             logger.warning(f"Serving stale cache for {base_symbol}")
-            return normalize_vn_ohlcv(stale_cache, symbol=base_symbol)
+            return _normalize_result(stale_cache)
 
         raise ValueError(f"No data for {base_symbol} from any source (vnstock/TvDatafeed/yfinance/cache)")
 
